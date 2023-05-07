@@ -1,6 +1,10 @@
 # 🌲🤏 LoRA-Instruct
 
-Initial hacky work to get INCITE-RedPajama 7B to "train".
+This repository contains code for instruction fine-tuning permissive open source LLMs using [low-rank adaptation (LoRA)](https://arxiv.org/abs/2106.09685).
+
+- Currently only supports LoRA Instruct fine-tuning [RedPajama-INCITE-Base-7B-v0.1](https://huggingface.co/togethercomputer/RedPajama-INCITE-Base-7B-v0.1).
+
+
 
 Inspired by [Alpaca-LoRA](https://github.com/tloen/alpaca-lora)
 
