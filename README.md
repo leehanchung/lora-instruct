@@ -76,5 +76,4 @@ torchrun \
 ## References
 - [LoRA: Low-Rank Adapation of Large Language Models](https://arxiv.org/abs/2106.09685)
 - [State-of-the-art Parameter-Efficient Fine-Tuning (PEFT) methods](https://github.com/huggingface/peft)
-- [Low-rank Adaption of Large Language Models: Explaining the Key Concepts Behind LoRA](https://www.youtube.com/watch?v=dA-NhCtrrVE) by [Chris Alexiuk](https://www.linkedin.com/in/csalexiuk/)
-- [Low-rank Adaption of Large Language Models Part 2: Simple Fine-tuning with LoR ](https://www.youtube.com/watch?v=iYr1xZn26R8) by [Chris Alexiuk](https://www.linkedin.com/in/csalexiuk/)
+- [Stanford Alpaca: An Instruction-following LLaMA Model](https://github.com/tatsu-lab/stanford_alpaca)
