@@ -2,22 +2,29 @@ import os
 import sys
 import warnings
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import fire
 import torch
-import transformers
 from datasets import load_dataset
 from dotenv import load_dotenv
 from peft import (
     LoraConfig,
     get_peft_model,
     get_peft_model_state_dict,
-    prepare_model_for_int8_training,
+    # prepare_model_for_int8_training,
     set_peft_model_state_dict,
 )
-
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+    DataCollatorForSeq2Seq,
+    PreTrainedModel,
+    PreTrainedTokenizer,
+    Trainer,
+    TrainingArguments
+)
 from transformers.tokenization_utils_base import logger as tokenization_logger
 
 from utils.prompter import Prompter
@@ -38,6 +45,7 @@ class TrainConfig:
     base_model: str
     data_path: str = "yahma/alpaca-cleaned"
     output_dir: str = "./lora-alpaca"
+    device_map: str = "auto"
     batch_size: int = 128
     micro_batch_size: int = 4
     num_epochs: int = 3
@@ -48,15 +56,11 @@ class TrainConfig:
     lora_alpha: int = 16
     lora_dropout: float = 0.05
     lora_target_modules: List[str] = field(
-        default_factory=lambda: ["query_key_value", "xxx"]
+        default_factory=lambda: ["query_key_value"]
     )
     train_on_inputs: bool = True
     add_eos_token: bool = False
     group_by_length: bool = False
-    wandb_project: str = ""
-    wandb_run_name: str = ""
-    wandb_watch: str = ""
-    wandb_log_model: str = ""
     resume_from_checkpoint: Optional[str] = None
     prompt_template_name: str = "alpaca"
 
@@ -118,6 +122,61 @@ class TokenizerHelper:
         return tokenized_full_prompt
 
 
+def setup_model(config: TrainConfig) -> Tuple[PreTrainedModel, PreTrainedTokenizer]:
+    quantization_config = BitsAndBytesConfig(llm_int8_enable_fp32_cpu_offload=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        config.base_model,
+        trust_remote_code=True,
+        load_in_8bit=True,
+        torch_dtype=torch.float16,
+        device_map=config.device_map,
+        quantization_config=quantization_config,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(config.base_model)
+
+    # LoRA configuration
+    lora_config = LoraConfig(
+        r=config.lora_r,
+        lora_alpha=config.lora_alpha,
+        target_modules=config.lora_target_modules,
+        lora_dropout=config.lora_dropout,
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+    model = get_peft_model(model, lora_config)
+
+    return model, tokenizer
+
+
+def load_data(config: TrainConfig) -> Tuple:
+    """TODO: Not working yet.
+
+    Args:
+        config (TrainConfig): _description_
+
+    Returns:
+        Tuple: _description_
+    """
+    # Load the dataset
+    dataset = load_dataset(config.dataset_name)
+
+    tokenized_dataset = dataset.map(tokenize_function, batched=True)
+
+    # Data collator
+    data_collator = DataCollatorForSeq2Seq(tokenizer=tokenizer, mlm=False)
+
+    # Split the dataset into train, validation and (optionally) test sets
+    train_dataset = tokenized_dataset["train"]
+    val_dataset = tokenized_dataset["validation"]
+
+    if "test" in tokenized_dataset:
+        test_dataset = tokenized_dataset["test"]
+    else:
+        test_dataset = None
+
+    return train_dataset, val_dataset, test_dataset, data_collator
+
+
 def train(
     # model/data params
     base_model: str = "",  # the only required argument
@@ -135,19 +194,9 @@ def train(
     lora_alpha: int = 16,
     lora_dropout: float = 0.05,
     lora_target_modules: List[str] = ["query_key_value", "xxx"],
-    # lora_target_modules: List[str] = [
-    #     "q_proj",
-    #     "v_proj",
-    # ],
-    # llm hyperparams
     train_on_inputs: bool = True,  # if False, masks out inputs in loss
     add_eos_token: bool = False,
     group_by_length: bool = False,  # faster, but produces an odd training loss curve
-    # wandb params
-    wandb_project: str = "",
-    wandb_run_name: str = "",
-    wandb_watch: str = "",  # options: false | gradients | all
-    wandb_log_model: str = "",  # options: false | true
     resume_from_checkpoint: str = None,  # either training checkpoint or final adapter
     prompt_template_name: str = "alpaca",  # Prompt template to use, default to Alpaca
 ):
@@ -170,10 +219,6 @@ def train(
             f"train_on_inputs: {train_on_inputs}\n"
             f"add_eos_token: {add_eos_token}\n"
             f"group_by_length: {group_by_length}\n"
-            f"wandb_project: {wandb_project}\n"
-            f"wandb_run_name: {wandb_run_name}\n"
-            f"wandb_watch: {wandb_watch}\n"
-            f"wandb_log_model: {wandb_log_model}\n"
             f"resume_from_checkpoint: {resume_from_checkpoint or False}\n"
             f"prompt template: {prompt_template_name}\n"
         )
@@ -192,18 +237,6 @@ def train(
         device_map = {"": int(os.environ.get("LOCAL_RANK") or 0)}
         gradient_accumulation_steps = gradient_accumulation_steps // world_size
     print(f"device map: {device_map}")
-
-    # Check if parameter passed or if set within environ
-    use_wandb = len(wandb_project) > 0 or (
-        "WANDB_PROJECT" in os.environ and len(os.environ["WANDB_PROJECT"]) > 0
-    )
-    # Only overwrite environ if wandb param passed
-    if len(wandb_project) > 0:
-        os.environ["WANDB_PROJECT"] = wandb_project
-    if len(wandb_watch) > 0:
-        os.environ["WANDB_WATCH"] = wandb_watch
-    if len(wandb_log_model) > 0:
-        os.environ["WANDB_LOG_MODEL"] = wandb_log_model
 
     #
     # Model loading
@@ -231,7 +264,7 @@ def train(
     #
     # had to turn int8 training off for some reason. could it be the titan rtx?
     # turned it on and kinda working now, but wtf?
-    model = prepare_model_for_int8_training(model)
+    # model = prepare_model_for_int8_training(model)
 
     #
     # LoRA
@@ -303,11 +336,12 @@ def train(
         model.is_parallelizable = True
         model.model_parallel = True
 
-    trainer = transformers.Trainer(
+    use_wandb = False
+    trainer = Trainer(
         model=model,
         train_dataset=train_data,
         eval_dataset=val_data,
-        args=transformers.TrainingArguments(
+        args=TrainingArguments(
             per_device_train_batch_size=micro_batch_size,
             gradient_accumulation_steps=gradient_accumulation_steps,
             warmup_steps=100,
@@ -328,7 +362,7 @@ def train(
             report_to="wandb" if use_wandb else None,
             run_name=wandb_run_name if use_wandb else None,
         ),
-        data_collator=transformers.DataCollatorForSeq2Seq(
+        data_collator=DataCollatorForSeq2Seq(
             tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
         ),
     )

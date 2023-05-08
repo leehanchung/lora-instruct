@@ -1,6 +1,8 @@
 # 🌲🤏 LoRA-Instruct
 
-This repository contains code for instruction fine-tuning permissive open source LLMs using [low-rank adaptation (LoRA)](https://arxiv.org/abs/2106.09685). Code is tested using [Stanford Alpaca](https://crfm.stanford.edu/2023/03/13/alpaca.html) dataset.
+This repository contains code for fine-tuning permissive open source LLMs using [low-rank adaptation (LoRA)](https://arxiv.org/abs/2106.09685).
+
+Code is tested using [Stanford Alpaca](https://crfm.stanford.edu/2023/03/13/alpaca.html) dataset.
 
 - Estimated training time for fine-tuning RedPajama-INCITE-Base-7B-v0.1 with a single RTX 3090 and Stanford Alpaca is ~12 hours.
 - Estimated training time for fine-tuning RedPajama-INCITE-Base-7B-v0.1 with RTX 3090 and RTX Titan and Stanford Alpaca is ~6.5 hours.
@@ -9,12 +11,24 @@ This repository contains code for instruction fine-tuning permissive open source
 
 Inspired by [Alpaca-LoRA](https://github.com/tloen/alpaca-lora)
 
-# Known Models
-| Model | 3B | 7B | 13B |
+## Trained Models
+| Model | Runs | Training Time  | Link |
 |:-------|:----:|:----:|:-----:|
-| LLaMA | :white_large_square: | :white_large_square: | :white_large_square: |
-| INCITE-RedPajama | :white_large_square: | :white_check_mark: | :white_large_square: |
-| MPT | :white_large_square: | :white_large_square: | :white_large_square: |
+| LLaMA 3B | :white_large_square: |  |  |
+| LLaMA 7B | :white_large_square: |  |  |
+| RedPajama 3B | :white_check_mark: | 1:40:00 | |
+| RedPajama 7B | :white_check_mark: | 3:09:58 | |
+| MPT 3B | :white_large_square: |  |  |
+| MPT 7B | :white_large_square: |  |  |
+
+#### Training Hardware Spec
+```
+Ubuntu 20.04.1 LTS (WSL2)
+
+Driver Version: 531.41
+CUDA Version: 12.1
+cuDNN version: 8.5.0
+```
 
 ### Local Setup
 
@@ -40,7 +54,9 @@ python finetune.py \
     --output_dir './lora-redpajama'
 ```
 
-#### Training on 2 GPUs.
+#### Distributed Training
+
+We uses HuggingFace's `accelerate` library for distributed training. The following is an example for distributed training with two GPUs.
 
 * NOTE: please set the following environment variables
 ```bash
@@ -55,15 +71,6 @@ torchrun \
     finetune.py \
     --base_model 'togethercomputer/RedPajama-INCITE-Base-7B-v0.1' \
     --output_dir './lora-redpajama'
-```
-
-#### Hardware Spec
-```
-Ubuntu 20.04.1 LTS on Windows 11 WSL
-
-Driver Version: 531.41
-CUDA Version: 12.1
-cuDNN version: 8.5.0
 ```
 
 ## References
