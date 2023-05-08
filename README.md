@@ -9,12 +9,23 @@ This repository contains code for instruction fine-tuning permissive open source
 
 Inspired by [Alpaca-LoRA](https://github.com/tloen/alpaca-lora)
 
+# Known Models
+| Model | 3B | 7B | 13B |
+|:-------|:----:|:----:|:-----:|
+| LLaMA | :white_large_square: | :white_large_square: | :white_large_square: |
+| INCITE-RedPajama | :white_large_square: | :white_check_mark: | :white_large_square: |
+| MPT | :white_large_square: | :white_large_square: | :white_large_square: |
+
 ### Local Setup
 
 Install dependencies
-
 ```bash
 poetry install
+```
+
+To fine-tune using NVidia 2000 series GPU or earlier, please comment out this line in `finetune.py`
+```python
+model = prepare_model_for_int8_training(model)
 ```
 
 ### Training (`finetune.py`)
@@ -45,3 +56,18 @@ torchrun \
     --base_model 'togethercomputer/RedPajama-INCITE-Base-7B-v0.1' \
     --output_dir './lora-redpajama'
 ```
+
+#### Hardware Spec
+```
+Ubuntu 20.04.1 LTS on Windows 11 WSL
+
+Driver Version: 531.41
+CUDA Version: 12.1
+cuDNN version: 8.5.0
+```
+
+## References
+- [LoRA: Low-Rank Adapation of Large Language Models](https://arxiv.org/abs/2106.09685)
+- [State-of-the-art Parameter-Efficient Fine-Tuning (PEFT) methods](https://github.com/huggingface/peft)
+- [Low-rank Adaption of Large Language Models: Explaining the Key Concepts Behind LoRA](https://www.youtube.com/watch?v=dA-NhCtrrVE) by [Chris Alexiuk](https://www.linkedin.com/in/csalexiuk/)
+- [Low-rank Adaption of Large Language Models Part 2: Simple Fine-tuning with LoR ](https://www.youtube.com/watch?v=iYr1xZn26R8) by [Chris Alexiuk](https://www.linkedin.com/in/csalexiuk/)
