@@ -16,6 +16,7 @@ from peft import (
     set_peft_model_state_dict,
 )
 from transformers import (
+    AutoConfig,
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
@@ -193,7 +194,7 @@ def train(
     lora_r: int = 8,
     lora_alpha: int = 16,
     lora_dropout: float = 0.05,
-    lora_target_modules: List[str] = ["query_key_value", "xxx"],
+    lora_target_modules: List[str] = ["Wqkv", "xxx"],
     train_on_inputs: bool = True,  # if False, masks out inputs in loss
     add_eos_token: bool = False,
     group_by_length: bool = False,  # faster, but produces an odd training loss curve
@@ -242,10 +243,19 @@ def train(
     # Model loading
     #
     quantization_config = BitsAndBytesConfig(llm_int8_enable_fp32_cpu_offload=True)
+
+    # for mpt
+    config = AutoConfig.from_pretrained(
+        'mosaicml/mpt-7b',
+        trust_remote_code=True
+    )
+    config.attn_config['attn_impl'] = 'triton'
+
     model = AutoModelForCausalLM.from_pretrained(
         # 'mosaicml/mpt-7b',
         base_model,
         trust_remote_code=True,
+        config=config,
         # base_model,
         load_in_8bit=True,
         torch_dtype=torch.float16,
@@ -254,7 +264,8 @@ def train(
         # load_in_8bit_fp32_cpu_offload=True
     )
 
-    tokenizer = AutoTokenizer.from_pretrained(base_model)
+    # tokenizer = AutoTokenizer.from_pretrained(base_model)
+    tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b")
 
     tokenizer.pad_token_id = 0  # unk. we want this to be different from the eos token
     tokenizer.padding_side = "left"  # Allow batched inference
