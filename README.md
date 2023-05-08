@@ -1,4 +1,4 @@
-# 🌲🤏 LoRA-Instruct
+# :teacher:🤏 LoRA-Instruct
 
 This repository contains code for fine-tuning permissive open source LLMs using [low-rank adaptation (LoRA)](https://arxiv.org/abs/2106.09685).
 
@@ -16,7 +16,7 @@ Inspired by [Alpaca-LoRA](https://github.com/tloen/alpaca-lora)
 |:-------|:----:|:----:|:-----:|
 | LLaMA 3B | :white_large_square: |  |  |
 | LLaMA 7B | :white_large_square: |  |  |
-| RedPajama 3B | :white_check_mark: | 1:40:00 | |
+| RedPajama 3B | :white_check_mark: | 1:44:14 | |
 | RedPajama 7B | :white_check_mark: | 3:09:58 | |
 | MPT 3B | :white_large_square: |  |  |
 | MPT 7B | :white_large_square: |  |  |
@@ -54,7 +54,7 @@ python finetune.py \
     --output_dir './lora-redpajama'
 ```
 
-#### Distributed Training
+#### Distributed Training with 🤗 Accelerate
 
 We uses HuggingFace's `accelerate` library for distributed training. The following is an example for distributed training with two GPUs.
 
