@@ -194,7 +194,7 @@ def train(
     lora_r: int = 8,
     lora_alpha: int = 16,
     lora_dropout: float = 0.05,
-    lora_target_modules: List[str] = ["Wqkv", "xxx"],
+    lora_target_modules: List[str] = ["Wqkv"],
     train_on_inputs: bool = True,  # if False, masks out inputs in loss
     add_eos_token: bool = False,
     group_by_length: bool = False,  # faster, but produces an odd training loss curve
