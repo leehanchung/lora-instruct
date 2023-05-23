@@ -19,7 +19,7 @@ The default template, used unless otherwise specified, is `alpaca.json`
 
 ```json
 {
-    "description": "Template used by Alpaca-LoRA.",
+    "description": "Template used by Alpaca.",
     "prompt_input": "Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.\n\n### Instruction:\n{instruction}\n\n### Input:\n{input}\n\n### Response:\n",
     "prompt_no_input": "Below is an instruction that describes a task. Write a response that appropriately completes the request.\n\n### Instruction:\n{instruction}\n\n### Response:\n",
     "response_split": "### Response:"    
@@ -32,15 +32,3 @@ The default template, used unless otherwise specified, is `alpaca.json`
 ### alpaca
 
 Default template used for generic LoRA fine tunes so far.
-
-### alpaca_legacy
-
-Legacy template used by the original alpaca repo, with no `\n` after the response field. Kept for reference and experiments.
-
-### alpaca_short
-
-A trimmed down alpaca template which seems to perform just as well and spare some tokens. Models created with the default template seem to be queryable by the short tempalte as well. More experiments are welcome.
-
-### vigogne
-
-The default alpaca template, translated to french. This template was used to train the "Vigogne" LoRA and is to be used to query it, or for extra fine tuning.
