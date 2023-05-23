@@ -23,7 +23,7 @@ except:  # noqa: E722
     pass
 
 
-def main(base_model: str, lora_weights: str, load_8bit: bool = True,):
+def main(base_model: str, lora_weights: str, load_8bit: bool = False,):
     # if device == "cuda:o":
     print(torch.cuda.is_available())
     model = AutoModelForCausalLM.from_pretrained(
@@ -44,16 +44,15 @@ def main(base_model: str, lora_weights: str, load_8bit: bool = True,):
 
     input_ids = tokenizer(input, return_tensors="pt").input_ids.to(device)
 
-    output = model.generate(
+    greedy_output  = model.generate(
         input_ids=input_ids,
         # generation_config=generation_config,
         return_dict_in_generate=True,
         output_scores=True,
         max_new_tokens=500,
     )
-    print(output)
-    # else:
-    #     print('fuckkkkk')
+    print("Output:\n" + 100 * '-')
+    print(tokenizer.decode(greedy_output[0][0], skip_special_tokens=True))
 
 
 if __name__ == "__main__":
