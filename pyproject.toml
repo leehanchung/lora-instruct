@@ -17,22 +17,23 @@ readme = "README.md"
 packages = [{include = "lora_instruct"}]
 
 [tool.poetry.dependencies]
-python = "^3.10"
+python = ">=3.10,<3.12"
 sentencepiece = "^0.1.99"
 ipykernel = "^6.22.0"
 accelerate = "^0.18.0"
 appdirs = "^1.4.4"
 loralib = "^0.1.1"
-bitsandbytes = "^0.38.1"
+bitsandbytes = "^0.39.0"
 black = {extras = ["jupyter"], version = "^23.3.0"}
 datasets = "^2.12.0"
 fire = "^0.5.0"
-peft = {git = "https://github.com/huggingface/peft.git"}
+peft = "^0.3.0"
 transformers = ">=4.28.0"
 gradio = "^3.28.3"
 einops = "^0.6.1"
 python-dotenv = "^1.0.0"
 wandb = "^0.15.2"
+scipy = "^1.10.1"
 
 
 [tool.poetry.group.dev.dependencies]
@@ -41,6 +42,7 @@ flake8 = "^6.0.0"
 isort = "^5.12.0"
 pytest = "^7.3.1"
 tox = "^4.5.1"
+
 
 [build-system]
 requires = ["poetry-core"]
