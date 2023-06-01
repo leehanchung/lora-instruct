@@ -57,7 +57,7 @@ class TrainConfig:
     lora_alpha: int = 16
     lora_dropout: float = 0.05
     lora_target_modules: List[str] = field(
-        default_factory=lambda: ["query_key_value"]
+        default_factory=lambda: ["wqkv"]
     )
     train_on_inputs: bool = True
     add_eos_token: bool = False
@@ -129,7 +129,7 @@ def setup_model(config: TrainConfig) -> Tuple[PreTrainedModel, PreTrainedTokeniz
         config.base_model,
         trust_remote_code=True,
         load_in_8bit=True,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         device_map=config.device_map,
         quantization_config=quantization_config,
     )
@@ -249,6 +249,7 @@ def train(
         'mosaicml/mpt-7b',
         trust_remote_code=True
     )
+    config.update({"max_seq_len": 4096})
     config.attn_config['attn_impl'] = 'triton'
 
     model = AutoModelForCausalLM.from_pretrained(
@@ -258,7 +259,7 @@ def train(
         config=config,
         # base_model,
         load_in_8bit=True,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         device_map=device_map,
         quantization_config=quantization_config,
         # load_in_8bit_fp32_cpu_offload=True
