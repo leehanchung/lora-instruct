@@ -20,6 +20,7 @@ Inspired by [Alpaca-LoRA](https://github.com/tloen/alpaca-lora)
 | RedPajama 7B | :white_check_mark: | 3:09:58 | |
 | MPT 3B | :white_large_square: |  |  |
 | MPT 7B | :white_large_square: |  |  |
+| Falcon 7B | :white_check_mark: |  |  |
 
 #### Training Hardware Spec
 ```
