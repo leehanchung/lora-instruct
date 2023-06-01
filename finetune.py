@@ -128,7 +128,7 @@ def setup_model(config: TrainConfig) -> Tuple[PreTrainedModel, PreTrainedTokeniz
         config.base_model,
         trust_remote_code=True,
         load_in_8bit=True,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         device_map=config.device_map,
         quantization_config=quantization_config,
     )
@@ -193,7 +193,7 @@ def train(
     lora_r: int = 8,
     lora_alpha: int = 16,
     lora_dropout: float = 0.05,
-    lora_target_modules: List[str] = ["query_key_value", "xxx"],
+    lora_target_modules: List[str] = ["query_key_value"],
     train_on_inputs: bool = True,  # if False, masks out inputs in loss
     add_eos_token: bool = False,
     group_by_length: bool = False,  # faster, but produces an odd training loss curve
@@ -248,7 +248,7 @@ def train(
         trust_remote_code=True,
         # base_model,
         load_in_8bit=True,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         device_map=device_map,
         quantization_config=quantization_config,
         # load_in_8bit_fp32_cpu_offload=True
