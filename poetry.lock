@@ -2,14 +2,14 @@
 
 [[package]]
 name = "accelerate"
-version = "0.18.0"
+version = "0.19.0"
 description = "Accelerate"
 category = "main"
 optional = false
 python-versions = ">=3.7.0"
 files = [
-    {file = "accelerate-0.18.0-py3-none-any.whl", hash = "sha256:41a84ac94407d7dcf030caf0cdadc70496594aec27ea680207bdb15b95f8a602"},
-    {file = "accelerate-0.18.0.tar.gz", hash = "sha256:1dd36fd972de4a6d0cffe5e4d6d30622fd853765f773b5582cf0796deefe1016"},
+    {file = "accelerate-0.19.0-py3-none-any.whl", hash = "sha256:2866b0bf9fff08f51e6384c95fa96725838b70f1988d1cce42e56b820d8a91dd"},
+    {file = "accelerate-0.19.0.tar.gz", hash = "sha256:84920226b9e642e453ef37593ee55b956b08d8200dea4087c546c34e26157e76"},
 ]
 
 [package.dependencies]
@@ -17,11 +17,11 @@ numpy = ">=1.17"
 packaging = ">=20.0"
 psutil = "*"
 pyyaml = "*"
-torch = ">=1.4.0"
+torch = ">=1.6.0"
 
 [package.extras]
-dev = ["black (>=23.1,<24.0)", "datasets", "deepspeed", "evaluate", "hf-doc-builder (>=0.3.0)", "parameterized", "pytest", "pytest-subtests", "pytest-xdist", "rich", "ruff (>=0.0.241)", "scikit-learn", "scipy", "tqdm", "transformers"]
-quality = ["black (>=23.1,<24.0)", "hf-doc-builder (>=0.3.0)", "ruff (>=0.0.241)"]
+dev = ["black (>=23.1,<24.0)", "datasets", "deepspeed", "evaluate", "hf-doc-builder (>=0.3.0)", "parameterized", "pytest", "pytest-subtests", "pytest-xdist", "rich", "ruff (>=0.0.241)", "scikit-learn", "scipy", "tqdm", "transformers", "urllib3 (<2.0.0)"]
+quality = ["black (>=23.1,<24.0)", "hf-doc-builder (>=0.3.0)", "ruff (>=0.0.241)", "urllib3 (<2.0.0)"]
 rich = ["rich"]
 sagemaker = ["sagemaker"]
 test-dev = ["datasets", "deepspeed", "evaluate", "scikit-learn", "scipy", "tqdm", "transformers"]
@@ -1410,6 +1410,28 @@ test = ["pytest (<7.1)", "pytest-asyncio", "testpath"]
 test-extra = ["curio", "matplotlib (!=3.2.0)", "nbformat", "numpy (>=1.21)", "pandas", "pytest (<7.1)", "pytest-asyncio", "testpath", "trio"]
 
 [[package]]
+name = "ipywidgets"
+version = "8.0.6"
+description = "Jupyter interactive widgets"
+category = "main"
+optional = false
+python-versions = ">=3.7"
+files = [
+    {file = "ipywidgets-8.0.6-py3-none-any.whl", hash = "sha256:a60bf8d2528997e05ac83fd19ea2fbe65f2e79fbe1b2b35779bdfc46c2941dcc"},
+    {file = "ipywidgets-8.0.6.tar.gz", hash = "sha256:de7d779f2045d60de9f6c25f653fdae2dba57898e6a1284494b3ba20b6893bb8"},
+]
+
+[package.dependencies]
+ipykernel = ">=4.5.1"
+ipython = ">=6.1.0"
+jupyterlab-widgets = ">=3.0.7,<3.1.0"
+traitlets = ">=4.3.1"
+widgetsnbextension = ">=4.0.7,<4.1.0"
+
+[package.extras]
+test = ["ipykernel", "jsonschema", "pytest (>=3.6.0)", "pytest-cov", "pytz"]
+
+[[package]]
 name = "isort"
 version = "5.12.0"
 description = "A Python utility / library to sort Python imports."
@@ -1528,6 +1550,18 @@ traitlets = ">=5.3"
 [package.extras]
 docs = ["myst-parser", "sphinx-autodoc-typehints", "sphinxcontrib-github-alt", "sphinxcontrib-spelling", "traitlets"]
 test = ["ipykernel", "pre-commit", "pytest", "pytest-cov", "pytest-timeout"]
+
+[[package]]
+name = "jupyterlab-widgets"
+version = "3.0.7"
+description = "Jupyter interactive widgets for JupyterLab"
+category = "main"
+optional = false
+python-versions = ">=3.7"
+files = [
+    {file = "jupyterlab_widgets-3.0.7-py3-none-any.whl", hash = "sha256:c73f8370338ec19f1bec47254752d6505b03601cbd5a67e6a0b184532f73a459"},
+    {file = "jupyterlab_widgets-3.0.7.tar.gz", hash = "sha256:c3a50ed5bf528a0c7a869096503af54702f86dda1db469aee1c92dc0c01b43ca"},
+]
 
 [[package]]
 name = "kiwisolver"
@@ -4182,6 +4216,18 @@ files = [
 test = ["pytest (>=6.0.0)"]
 
 [[package]]
+name = "widgetsnbextension"
+version = "4.0.7"
+description = "Jupyter interactive widgets for Jupyter Notebook"
+category = "main"
+optional = false
+python-versions = ">=3.7"
+files = [
+    {file = "widgetsnbextension-4.0.7-py3-none-any.whl", hash = "sha256:be3228a73bbab189a16be2d4a3cd89ecbd4e31948bfdc64edac17dcdee3cd99c"},
+    {file = "widgetsnbextension-4.0.7.tar.gz", hash = "sha256:ea67c17a7cd4ae358f8f46c3b304c40698bc0423732e3f273321ee141232c8be"},
+]
+
+[[package]]
 name = "xxhash"
 version = "3.2.0"
 description = "Python binding for xxHash"
@@ -4380,4 +4426,4 @@ multidict = ">=4.0"
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.10"
-content-hash = "987cfd0f8de1923a0790bef629cdfaa2463739630546818e053382784f54bb01"
+content-hash = "bef4e66d8767dbae02b72a6a4b150fca83e02401b30e7791a90ef80cdbd9bca9"

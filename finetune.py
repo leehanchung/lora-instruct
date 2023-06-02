@@ -57,7 +57,7 @@ class TrainConfig:
     lora_alpha: int = 16
     lora_dropout: float = 0.05
     lora_target_modules: List[str] = field(
-        default_factory=lambda: ["wqkv"]
+        default_factory=lambda: ["up_proj"]
     )
     train_on_inputs: bool = True
     add_eos_token: bool = False
@@ -119,7 +119,7 @@ class TokenizerHelper:
             ]  # could be sped up, probably
         else:
             tokenized_full_prompt["labels"] = tokenized_full_prompt["input_ids"]
-
+        # print(tokenized_full_prompt)
         return tokenized_full_prompt
 
 
@@ -194,7 +194,7 @@ def train(
     lora_r: int = 8,
     lora_alpha: int = 16,
     lora_dropout: float = 0.05,
-    lora_target_modules: List[str] = ["Wqkv"],
+    lora_target_modules: List[str] = ["up_proj"],
     train_on_inputs: bool = True,  # if False, masks out inputs in loss
     add_eos_token: bool = False,
     group_by_length: bool = False,  # faster, but produces an odd training loss curve
@@ -247,22 +247,24 @@ def train(
     # for mpt
     config = AutoConfig.from_pretrained(
         'mosaicml/mpt-7b',
-        trust_remote_code=True
+        trust_remote_code=True,
+        revision='main'
     )
     config.update({"max_seq_len": 4096})
-    config.attn_config['attn_impl'] = 'triton'
+    # config.attn_config['attn_impl'] = 'triton'
 
     model = AutoModelForCausalLM.from_pretrained(
         # 'mosaicml/mpt-7b',
         base_model,
-        trust_remote_code=True,
         config=config,
         # base_model,
-        load_in_8bit=True,
+        # load_in_8bit=True,
         torch_dtype=torch.bfloat16,
         device_map=device_map,
-        quantization_config=quantization_config,
+        # quantization_config=quantization_config,
         # load_in_8bit_fp32_cpu_offload=True
+        trust_remote_code=True,
+        revision='main'
     )
 
     # tokenizer = AutoTokenizer.from_pretrained(base_model)
@@ -342,6 +344,8 @@ def train(
         )
         val_data = None
 
+    print(train_data[0])
+
     if not ddp and torch.cuda.device_count() > 1:
         # keeps Trainer from trying its own DataParallelism
         # when more than 1 gpu is available
@@ -359,7 +363,7 @@ def train(
             warmup_steps=100,
             num_train_epochs=num_epochs,
             learning_rate=learning_rate,
-            fp16=True,
+            # fp16=True,
             logging_steps=10,
             optim="adamw_torch",
             evaluation_strategy="steps" if val_set_size > 0 else "no",
