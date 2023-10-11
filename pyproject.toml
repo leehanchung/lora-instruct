@@ -19,29 +19,42 @@ packages = [{include = "lora_instruct"}]
 [tool.poetry.dependencies]
 python = "^3.10"
 sentencepiece = "^0.1.99"
-ipykernel = "^6.22.0"
-accelerate = "^0.19.0"
+accelerate = "^0.23.0"
 appdirs = "^1.4.4"
 loralib = "^0.1.1"
-bitsandbytes = "^0.38.1"
-black = {extras = ["jupyter"], version = "^23.3.0"}
+bitsandbytes = "^0.41.1"
 datasets = "^2.12.0"
 fire = "^0.5.0"
-peft = {git = "https://github.com/huggingface/peft.git"}
+peft = "^0.5.0"
 transformers = ">=4.28.0"
 gradio = "^3.28.3"
 einops = "^0.6.1"
 python-dotenv = "^1.0.0"
 wandb = "^0.15.2"
-ipywidgets = "^8.0.6"
-
+vllm = "^0.2.0"
 
 [tool.poetry.group.dev.dependencies]
-black = "^23.3.0"
-flake8 = "^6.0.0"
+ipykernel = "^6.22.0"
+ipywidgets = "^8.0.6"
+black = {extras = ["jupyter"], version = "^23.9.1"}
 isort = "^5.12.0"
 pytest = "^7.3.1"
-tox = "^4.5.1"
+ruff = "^0.0.292"
+
+[tool.ruff]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "C",  # flake8-comprehensions
+    "B",  # flake8-bugbear
+]
+ignore = [
+    "E501",  # line too long, handled by black
+    "B008",  # do not perform function calls in argument defaults
+    "C901",  # too complex
+]
 
 [build-system]
 requires = ["poetry-core"]
