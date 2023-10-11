@@ -16,6 +16,7 @@ from peft import (
     set_peft_model_state_dict,
 )
 from transformers import (
+    AutoConfig,
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
@@ -56,7 +57,7 @@ class TrainConfig:
     lora_alpha: int = 16
     lora_dropout: float = 0.05
     lora_target_modules: List[str] = field(
-        default_factory=lambda: ["query_key_value"]
+        default_factory=lambda: ["up_proj"]
     )
     train_on_inputs: bool = True
     add_eos_token: bool = False
@@ -118,7 +119,7 @@ class TokenizerHelper:
             ]  # could be sped up, probably
         else:
             tokenized_full_prompt["labels"] = tokenized_full_prompt["input_ids"]
-
+        # print(tokenized_full_prompt)
         return tokenized_full_prompt
 
 
@@ -128,7 +129,7 @@ def setup_model(config: TrainConfig) -> Tuple[PreTrainedModel, PreTrainedTokeniz
         config.base_model,
         trust_remote_code=True,
         load_in_8bit=True,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         device_map=config.device_map,
         quantization_config=quantization_config,
     )
@@ -193,7 +194,7 @@ def train(
     lora_r: int = 8,
     lora_alpha: int = 16,
     lora_dropout: float = 0.05,
-    lora_target_modules: List[str] = ["query_key_value", "xxx"],
+    lora_target_modules: List[str] = ["up_proj"],
     train_on_inputs: bool = True,  # if False, masks out inputs in loss
     add_eos_token: bool = False,
     group_by_length: bool = False,  # faster, but produces an odd training loss curve
@@ -242,19 +243,32 @@ def train(
     # Model loading
     #
     quantization_config = BitsAndBytesConfig(llm_int8_enable_fp32_cpu_offload=True)
+
+    # for mpt
+    config = AutoConfig.from_pretrained(
+        'mosaicml/mpt-7b',
+        trust_remote_code=True,
+        revision='main'
+    )
+    config.update({"max_seq_len": 4096})
+    # config.attn_config['attn_impl'] = 'triton'
+
     model = AutoModelForCausalLM.from_pretrained(
         # 'mosaicml/mpt-7b',
         base_model,
-        trust_remote_code=True,
+        config=config,
         # base_model,
-        load_in_8bit=True,
-        torch_dtype=torch.float16,
+        # load_in_8bit=True,
+        torch_dtype=torch.bfloat16,
         device_map=device_map,
-        quantization_config=quantization_config,
+        # quantization_config=quantization_config,
         # load_in_8bit_fp32_cpu_offload=True
+        trust_remote_code=True,
+        revision='main'
     )
 
-    tokenizer = AutoTokenizer.from_pretrained(base_model)
+    # tokenizer = AutoTokenizer.from_pretrained(base_model)
+    tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b")
 
     tokenizer.pad_token_id = 0  # unk. we want this to be different from the eos token
     tokenizer.padding_side = "left"  # Allow batched inference
@@ -330,6 +344,8 @@ def train(
         )
         val_data = None
 
+    print(train_data[0])
+
     if not ddp and torch.cuda.device_count() > 1:
         # keeps Trainer from trying its own DataParallelism
         # when more than 1 gpu is available
@@ -347,7 +363,7 @@ def train(
             warmup_steps=100,
             num_train_epochs=num_epochs,
             learning_rate=learning_rate,
-            fp16=True,
+            # fp16=True,
             logging_steps=10,
             optim="adamw_torch",
             evaluation_strategy="steps" if val_set_size > 0 else "no",
