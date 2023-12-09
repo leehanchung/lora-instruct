@@ -1,8 +1,3 @@
-"""
-A dedicated helper to manage templates and prompt building.
-borrowed from https://github.com/tloen/alpaca-lora
-"""
-
 import json
 import os.path as osp
 from typing import Union

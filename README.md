@@ -77,3 +77,4 @@ torchrun \
 - [LoRA: Low-Rank Adapation of Large Language Models](https://arxiv.org/abs/2106.09685)
 - [State-of-the-art Parameter-Efficient Fine-Tuning (PEFT) methods](https://github.com/huggingface/peft)
 - [Stanford Alpaca: An Instruction-following LLaMA Model](https://github.com/tatsu-lab/stanford_alpaca)
+- [EMNLP 2022 Tutorial: Modular and Parameter-Efficient Fine-Tuning for NLP Models](https://www.youtube.com/watch?v=KoOlcX3XLd4)
