@@ -24,7 +24,7 @@ from transformers import (
     PreTrainedModel,
     PreTrainedTokenizer,
     Trainer,
-    TrainingArguments
+    TrainingArguments,
 )
 from transformers.tokenization_utils_base import logger as tokenization_logger
 
@@ -56,9 +56,7 @@ class TrainConfig:
     lora_r: int = 8
     lora_alpha: int = 16
     lora_dropout: float = 0.05
-    lora_target_modules: List[str] = field(
-        default_factory=lambda: ["up_proj"]
-    )
+    lora_target_modules: List[str] = field(default_factory=lambda: ["up_proj"])
     train_on_inputs: bool = True
     add_eos_token: bool = False
     group_by_length: bool = False
@@ -149,7 +147,7 @@ def setup_model(config: TrainConfig) -> Tuple[PreTrainedModel, PreTrainedTokeniz
     return model, tokenizer
 
 
-def load_data(config: TrainConfig) -> Tuple:
+def load_data(tokenizer, config: TrainConfig) -> Tuple:
     """TODO: Not working yet.
 
     Args:
@@ -161,7 +159,7 @@ def load_data(config: TrainConfig) -> Tuple:
     # Load the dataset
     dataset = load_dataset(config.dataset_name)
 
-    tokenized_dataset = dataset.map(tokenize_function, batched=True)
+    tokenized_dataset = dataset.map(tokenizer, batched=True)
 
     # Data collator
     data_collator = DataCollatorForSeq2Seq(tokenizer=tokenizer, mlm=False)
@@ -194,13 +192,15 @@ def train(
     lora_r: int = 8,
     lora_alpha: int = 16,
     lora_dropout: float = 0.05,
-    lora_target_modules: List[str] = ["up_proj"],
+    lora_target_modules: List[str] = None,
     train_on_inputs: bool = True,  # if False, masks out inputs in loss
     add_eos_token: bool = False,
     group_by_length: bool = False,  # faster, but produces an odd training loss curve
     resume_from_checkpoint: str = None,  # either training checkpoint or final adapter
     prompt_template_name: str = "alpaca",  # Prompt template to use, default to Alpaca
 ):
+    if lora_target_modules is None:
+        lora_target_modules = ["up_proj"]
     if int(os.environ.get("LOCAL_RANK", 0)) == 0:
         print(
             f"\n\n\nLoRA fine-tuning model with params:\n"
@@ -242,13 +242,11 @@ def train(
     #
     # Model loading
     #
-    quantization_config = BitsAndBytesConfig(llm_int8_enable_fp32_cpu_offload=True)
+    BitsAndBytesConfig(llm_int8_enable_fp32_cpu_offload=True)
 
     # for mpt
     config = AutoConfig.from_pretrained(
-        'mosaicml/mpt-7b',
-        trust_remote_code=True,
-        revision='main'
+        "mistralai/Mistral-7B-v0.1", trust_remote_code=True, revision="main"
     )
     config.update({"max_seq_len": 4096})
     # config.attn_config['attn_impl'] = 'triton'
@@ -264,11 +262,11 @@ def train(
         # quantization_config=quantization_config,
         # load_in_8bit_fp32_cpu_offload=True
         trust_remote_code=True,
-        revision='main'
+        revision="main",
     )
 
     # tokenizer = AutoTokenizer.from_pretrained(base_model)
-    tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b")
+    tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
 
     tokenizer.pad_token_id = 0  # unk. we want this to be different from the eos token
     tokenizer.padding_side = "left"  # Allow batched inference
@@ -376,7 +374,7 @@ def train(
             ddp_find_unused_parameters=False if ddp else None,
             group_by_length=group_by_length,
             report_to="wandb" if use_wandb else None,
-            run_name=wandb_run_name if use_wandb else None,
+            run_name="wandb_run_name" if use_wandb else None,
         ),
         data_collator=DataCollatorForSeq2Seq(
             tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True

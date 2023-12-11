@@ -32,12 +32,6 @@ repos:
     -   id: ruff
         args:
         - --fix
--   repo: https://github.com/ambv/black
-    rev: 22.6.0
-    hooks:
-    - id: black
-      language_version: python3.10
-      args: [--config=pyproject.toml]
 ci:
     autofix_commit_msg: 🎨 [pre-commit.ci] Auto format from pre-commit.com hooks
     autoupdate_commit_msg: ⬆ [pre-commit.ci] pre-commit autoupdate
