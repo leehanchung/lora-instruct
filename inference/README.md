@@ -7,7 +7,6 @@ There's no obvious standards in benchmarking LLM API Services, where inference o
 
 ## References
 - [Anyscale: Reproducible Performance Metrics for LLM inference](https://www.anyscale.com/blog/reproducible-performance-metrics-for-llm-inference)
-- [Anyscale: Serve Scalability Benchmark for RLlib Models](https://github.com/anyscale/serve-benchmark)
 - [Anyscale: LLMPerf](https://github.com/ray-project/llmperf)
 - [Anyscale: Continuous Batching](https://github.com/anyscale/llm-continuous-batching-benchmarks/blob/master/benchmark_throughput.py)
 - [FastChat: Test Throughput](https://github.com/lm-sys/FastChat/blob/5dbc4f30ab36f17b8e004246e53f1e13fce4a01c/fastchat/serve/test_throughput.py)
