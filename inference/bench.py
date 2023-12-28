@@ -166,6 +166,24 @@ async def delay_requests_poisson(
         interval = np.random.exponential(1.0 / requests_per_second)
         await asyncio.sleep(interval)
 
+async def parse_openai_compat_sse_chunks(
+    response: httpx.Response,
+) -> AsyncGenerator[dict]:
+    """Parse OpenAI 1.0+ compatible infernece services response SSE chunks.
+
+    Args:
+        response (httpx.Response): server side event response
+
+    Returns:
+        AsyncGenerator[dict]: json data chunks
+    """
+    async for line in response.aiter_lines():
+        line = line.strip()
+        if line.startswith("data:"):
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            yield json.loads(data)
 
 async def post_chat_completion_stream(
     api_url: str,
@@ -184,29 +202,24 @@ async def post_chat_completion_stream(
     timeout = httpx.Timeout(3 * 3600)
     request_start_time = time.perf_counter()
     async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(api_url, headers=headers, json=payload)
         chunks = []
         output_len = 0
         time_to_first_token = None
 
-        # Stream the response
-        # TODO: refactor these into their own functions
-        async for line in response.aiter_lines():
-            if not line and not time_to_first_token:
-                time_to_first_token = time.perf_counter() - request_start_time
+        response = await client.post(api_url, headers=headers, json=payload)
 
-            line = line.strip()
-            if line.startswith("data:"):
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-                data = json.loads(data)
-                if data["choices"]:
-                    output_len += 1
-                    content = data["choices"][0]["delta"].get("content")
-                    if content:
-                        # print(content, end='', flush=True)
-                        chunks.append(content)
+        # Stream the response
+        async for chunk in parse_openai_compat_sse_chunks(response):
+            chunk['id']
+            if chunk["choices"]:
+
+                output_len += 1
+                delta_content = chunk["choices"][0]["delta"].get("content")
+                if delta_content:
+                    if time_to_first_token is None:
+                        time_to_first_token = time.perf_counter() - request_start_time
+                    # print(content, end='', flush=True)
+                    chunks.append(delta_content)
 
         _ = "".join(chunks)
 
