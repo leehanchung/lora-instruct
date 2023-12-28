@@ -4,6 +4,7 @@ import asyncio
 import datetime
 import json
 import os
+import re
 import time
 from collections import defaultdict
 from collections.abc import AsyncGenerator
@@ -31,6 +32,11 @@ REQUEST_LATENCY: list[RequestLatency] = []
 
 
 class RequestResult(NamedTuple):
+    """Results of a single chat LLM post request.
+
+    Args:
+        NamedTuple (_type_): _description_
+    """
     valid: str
     ttft: float
     total_time: float
@@ -114,12 +120,12 @@ def generate_single_prompt(
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt}
     ]
-    return messages, random_key, tokens_in
+    return InputPrompt(messages=messages, random_key=random_key, tokens_in=tokens_in)
 
 
 def generate_prompts(*, num_prompts: int, **kwargs) -> list[InputPrompt]:
 
-    # TODO: This generates tons of duplicate prompts due to serialization.
+    # TODO: Using concurrent futures generates tons of duplicate prompts due to serialization.
     # with concurrent.futures.ProcessPoolExecutor() as executor:
     #     tasks = [executor.submit(generate_single_prompt, **kwargs) for _ in range(num_prompts)]
     #     results = [task.result() for task in concurrent.futures.as_completed(tasks)]
@@ -187,30 +193,23 @@ async def parse_openai_compat_sse_chunks(
 
 async def post_chat_completion_stream(
     api_url: str,
-    model: str,
+    payload: dict,
     headers: dict,
-    messages: str,
     input_len: int,
-    # output_len: int,
-) -> RequestResult:
-    payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": 0.0,
-        "stream": True,
-    }
-    timeout = httpx.Timeout(3 * 3600)
+    random_key: int,
+) -> tuple[str, int, int, str]:
     request_start_time = time.perf_counter()
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient() as client:
         chunks = []
         output_len = 0
         time_to_first_token = None
 
         response = await client.post(api_url, headers=headers, json=payload)
+        response.raise_for_status()
 
         # Stream the response
         async for chunk in parse_openai_compat_sse_chunks(response):
-            chunk['id']
+            request_id = chunk['id']
             if chunk["choices"]:
 
                 output_len += 1
@@ -221,30 +220,23 @@ async def post_chat_completion_stream(
                     # print(content, end='', flush=True)
                     chunks.append(delta_content)
 
-        _ = "".join(chunks)
-
-        # # TODO: mark errors and mismatches
+        content = "".join(chunks)
 
     request_end_time = time.perf_counter()
-    request_latency = request_end_time - request_start_time
+    total_time = request_end_time - request_start_time
 
     # TODO: Move this away from using global
     REQUEST_LATENCY.append(
         RequestLatency(
             input_len=input_len,
             output_len=output_len,
-            latency=request_latency,
+            latency=total_time,
             ttft=time_to_first_token,
         )
     )
-    # valid: str
-    # ttft: float
-    # total_time: float
-    # tokens_in: int
-    # tokens_out: int
-    # cause: str
-    # id: str
-    # return RequestResult(
+
+    return request_id, time_to_first_token, total_time, content, random_key
+
 
 async def benchmark(
     api_url: str,
@@ -253,18 +245,65 @@ async def benchmark(
     input_prompts: list[InputPrompt],
     request_rate: float,
 ) -> None:
+    tokenizer = tiktoken.encoding_for_model(model)
     tasks: list[asyncio.Task] = []
-    async for request in delay_requests_poisson(input_prompts, request_rate):
+    results = []
 
-        messages, _, tokens_in = request   # messages, random_key, tokens_in
+    # Build async API request tasks
+    async for request in delay_requests_poisson(input_prompts, request_rate):
+        payload = {
+            "model": model,
+            "messages": request.messages,
+            "temperature": 0.0,
+            "stream": True,
+        }
         task = asyncio.create_task(
-            post_chat_completion_stream(api_url, model, headers, messages, tokens_in)
+            post_chat_completion_stream(
+                api_url=api_url,
+                payload=payload,
+                headers=headers,
+                input_len=request.tokens_in,
+                random_key=request.random_key,
+            )
         )
         tasks.append(task)
     print(f"Number of tasks: {len(tasks)}")
-    await asyncio.gather(*tasks)
 
-def result_analytics(results: list[tuple[int, int, float, float]]) -> None:
+    for task in asyncio.as_completed(tasks):
+        try:
+            request_id, time_to_first_token, total_time, content, random_key = await task
+        except Exception as e:
+            print(e)
+            results.append(
+                RequestResult(valid='Exception', ttft=-1, total_time=-1, tokens_in=-1, tokens_out=-1, cause=str(e), id='',)
+            )
+
+        tokens_out = len(tokenizer.encode(content))
+        # Find the random key
+        nums = re.findall(r"\d+", content)
+
+        if len(nums) > 0:
+            return_nums: int = int(nums[0])
+            valid: str = "OK"
+            cause: str = ""
+            if return_nums != random_key:
+                print(f"Error: expected {random_key}, got {return_nums}", flush=True)
+                valid = "Mismatch"
+                cause = f"Expected {random_key}, got {return_nums}.\nOutput:\n{content}"
+        else:
+            print(f"Error: no number found in {content}", flush=True)
+            valid:str = "Mismatch"
+            cause = f"Random key not found. Input = {random_key}.\nOutput:\n{content}"
+
+        results.append(
+            RequestResult(valid=valid, ttft=time_to_first_token, total_time=total_time, tokens_in=request.tokens_in, tokens_out=tokens_out, cause=cause, id=request_id,)
+        )
+
+    return results
+
+
+
+def result_analytics(results: list[RequestResult]) -> None:
     args_dict = {}
     df = pd.DataFrame(
         results,
@@ -308,8 +347,8 @@ def result_analytics(results: list[tuple[int, int, float, float]]) -> None:
         gt_3_ttft = len(cdf[cdf['ttft'] > 3])
 
         print(f'Mean End-to-end time: {mean_e2e*1000.0:.0f} ms')
-        print(f'Mean TTFT: {mean_ttft*1000.0:.0f} ms', end="")
-        print(f'mean_tokens_in: {mean_tokens_in:.0f}', end="")
+        print(f'Mean TTFT: {mean_ttft*1000.0:.0f} ms', end=" ")
+        print(f'mean_tokens_in: {mean_tokens_in:.0f}', end=" ")
         print(f'mean_tokens_out: {mean_tokens_out:.0f}')
         print(f'Max TTFT: {max_ttft*1000.0:.0f} ms')
         print(f'TTFT > 3s: {gt_3_ttft*100:.2f}%')
@@ -341,7 +380,7 @@ def result_analytics(results: list[tuple[int, int, float, float]]) -> None:
     benchmark_result = f"benchmark-{ts}.json"
 
     with open(benchmark_result, 'w') as f:
-        f.write(json.dump(args_dict, f, indent=4))
+        f.write(json.dumps(args_dict, indent=4))
 
 
 def get_sentences_bank(*, filename: str) -> list[str]:
@@ -377,12 +416,14 @@ def main(args: argparse.Namespace):
     headers = get_headers(auth_token=os.getenv("OPENAI_API_KEY"))
     print("Starting benchmarking...")
     benchmark_start_time = time.perf_counter()
-    asyncio.run(
+    results = asyncio.run(
         benchmark(args.api_url, args.model, headers, input_prompts, request_rate)
     )
     print("\n\nBenchmarking finished.")
     benchmark_end_time = time.perf_counter()
     benchmark_time = benchmark_end_time - benchmark_start_time
+
+    result_analytics(results)
 
     print(f"Total time: {benchmark_time:.2f} s")
     print(f"Throughput: {len(REQUEST_LATENCY) / benchmark_time:.2f} requests/s")
@@ -442,7 +483,7 @@ def setup_parser():
     # Benchmark configuration
     group = parser.add_mutually_exclusive_group()
     parser.add_argument(
-        "--num-prompts", type=int, default=50, help="Number of prompts to process."
+        "--num-prompts", type=int, default=10, help="Number of prompts to process."
     )
     group.add_argument(
         "--request-rate",
