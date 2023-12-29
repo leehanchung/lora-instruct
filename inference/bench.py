@@ -209,9 +209,8 @@ async def post_chat_completion_stream(
 
         # Stream the response
         async for chunk in parse_openai_compat_sse_chunks(response):
-            request_id = chunk['id']
             if chunk["choices"]:
-
+                request_id = chunk['id']
                 output_len += 1
                 delta_content = chunk["choices"][0]["delta"].get("content")
                 if delta_content:
@@ -267,13 +266,13 @@ async def benchmark(
             )
         )
         tasks.append(task)
-    print(f"Number of tasks: {len(tasks)}")
+    print(f"Number of tasks: {len(tasks)}", flush=True)
 
     for task in asyncio.as_completed(tasks):
         try:
             request_id, time_to_first_token, total_time, content, random_key = await task
         except Exception as e:
-            print(e)
+            print(e, flush=True)
             results.append(
                 RequestResult(valid='Exception', ttft=-1, total_time=-1, tokens_in=-1, tokens_out=-1, cause=str(e), id='',)
             )
@@ -320,7 +319,7 @@ def result_analytics(results: list[RequestResult]) -> None:
     ts = int(time.time())
     filename = f"service-{ts}_raw.json"
     df.to_json(filename)
-    print("Results saved to {filename}")
+    print(f"Results saved to {filename}")
 
     print('Validity results:')
     print(df['valid'].value_counts())
@@ -483,7 +482,7 @@ def setup_parser():
     # Benchmark configuration
     group = parser.add_mutually_exclusive_group()
     parser.add_argument(
-        "--num-prompts", type=int, default=10, help="Number of prompts to process."
+        "--num-prompts", type=int, default=60, help="Number of prompts to process."
     )
     group.add_argument(
         "--request-rate",
