@@ -277,6 +277,7 @@ async def benchmark(
                 RequestResult(valid='Exception', ttft=-1, total_time=-1, tokens_in=-1, tokens_out=-1, cause=str(e), id='',)
             )
 
+        # TODO: move these out result collection loop to reduce latency
         tokens_out = len(tokenizer.encode(content))
         # Find the random key
         nums = re.findall(r"\d+", content)
