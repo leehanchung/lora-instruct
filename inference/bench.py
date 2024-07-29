@@ -16,6 +16,7 @@ import pandas as pd
 import tiktoken
 from dotenv import load_dotenv
 from num2words import num2words
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 load_dotenv()
 
@@ -394,6 +395,18 @@ def get_sentences_bank(*, filename: str) -> list[str]:
     """
     with open(filename) as f:
         return f.readlines()
+
+
+def load_model_and_tokenizer(model_name: str):
+    model = AutoModelForCausalLM.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    return model, tokenizer
+
+
+def generate_response(model, tokenizer, prompt: str, max_length: int = 50):
+    inputs = tokenizer(prompt, return_tensors="pt")
+    outputs = model.generate(**inputs, max_length=max_length)
+    return tokenizer.decode(outputs[0], skip_special_tokens=True)
 
 
 def main(args: argparse.Namespace):

@@ -10,4 +10,13 @@ else
     echo "libnccl.so.2 not found"
 fi
 
+# Run the inference code
 python -m vllm.entrypoints.openai.api_server --model meta-llama/Llama-2-7b-chat-hf
+
+# Instructions for running the inference code
+# Ensure that you have the necessary dependencies installed
+# You can install them using the following command:
+# pip install -r requirements.txt
+
+# To run the inference code, use the following command:
+# bash inference/deploy_local.sh
