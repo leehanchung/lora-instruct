@@ -12,6 +12,9 @@ out/
 13B/
 lora-redpajama/
 
+# Scraped job data
+scripts/job_postings/
+
 # Dev environment files
 .venv/
 .vscode
