@@ -268,6 +268,45 @@ Common failure modes:
 
 ---
 
+## Local development
+
+### Lint and format
+
+Ruff (lint + formatter) is the only style tooling. Config lives in
+[`pyproject.toml`](pyproject.toml) under `[tool.ruff]`. It's installed
+as a dev extra, so run `make sync-dev` once (or whenever you `uv sync`
+fresh).
+
+```bash
+make check     # ruff check + format --check — no writes, suitable for CI
+make lint      # ruff check --fix
+make fmt       # ruff format (writes)
+```
+
+### Pre-commit hook
+
+The repo-root [`.pre-commit-config.yaml`](../../.pre-commit-config.yaml)
+includes a ruff + ruff-format hook scoped to files under
+`infra/discord-orchestrator/`. To enable it on your laptop:
+
+```bash
+uv tool install pre-commit   # one-time
+cd <repo-root>
+pre-commit install           # installs the git hook
+```
+
+After this, every `git commit` runs trailing-whitespace, EOF, TOML/YAML,
+ruff lint (with auto-fix), and ruff-format on the staged files.
+If ruff rewrites anything you'll need to re-stage and commit again.
+
+To run manually across all changed files without committing:
+
+```bash
+pre-commit run --all-files
+```
+
+---
+
 ## Updating manually
 
 ```bash

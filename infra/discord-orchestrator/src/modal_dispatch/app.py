@@ -107,8 +107,10 @@ def run_claude_code(
     cmd = [
         "claude",
         "--print",
-        "-p", prompt,
-        "--output-format", "text",
+        "-p",
+        prompt,
+        "--output-format",
+        "text",
     ]
     if resume:
         # --continue resumes the most recent Claude Code session in the cwd.

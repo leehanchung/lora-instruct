@@ -1,5 +1,5 @@
 default_language_version:
-    python: python3.10
+    python: python3
 repos:
 -   repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.4.0
@@ -15,6 +15,7 @@ repos:
     -   id: check-json
     -   id: check-merge-conflict
     -   id: detect-aws-credentials
+        args: [--allow-missing-credentials]
 -   repo: https://github.com/koalaman/shellcheck-precommit
     rev: v0.8.0
     hooks:
@@ -32,6 +33,21 @@ repos:
     -   id: ruff
         args:
         - --fix
+        exclude: ^infra/discord-orchestrator/
+# Modern ruff scoped to infra/discord-orchestrator/ only. Keeps the rest of
+# the monorepo on the legacy hook above, while this subproject uses current
+# ruff rules + format. Version should match the one in
+# infra/discord-orchestrator/pyproject.toml's dev extras.
+-   repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.10
+    hooks:
+    -   id: ruff
+        name: ruff (discord-orchestrator)
+        files: ^infra/discord-orchestrator/.*\.py$
+        args: [--fix]
+    -   id: ruff-format
+        name: ruff-format (discord-orchestrator)
+        files: ^infra/discord-orchestrator/.*\.py$
 ci:
     autofix_commit_msg: 🎨 [pre-commit.ci] Auto format from pre-commit.com hooks
     autoupdate_commit_msg: ⬆ [pre-commit.ci] pre-commit autoupdate

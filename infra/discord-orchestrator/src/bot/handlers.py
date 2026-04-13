@@ -28,9 +28,7 @@ class MessageHandler:
         self.sessions = session_manager
         self.dispatcher = dispatcher
 
-    async def handle_channel_message(
-        self, message: discord.Message, prompt: str
-    ) -> None:
+    async def handle_channel_message(self, message: discord.Message, prompt: str) -> None:
         """New @-mention in a channel → create thread, dispatch task."""
         thread_name = prompt[:50].strip() or "Claude Code task"
         thread = await message.create_thread(name=thread_name)
@@ -46,9 +44,7 @@ class MessageHandler:
 
         await self._dispatch_and_respond(thread, session, prompt, resume=False)
 
-    async def handle_thread_reply(
-        self, message: discord.Message, prompt: str
-    ) -> None:
+    async def handle_thread_reply(self, message: discord.Message, prompt: str) -> None:
         """Reply inside an existing thread → resume or start new session."""
         thread = message.channel
         assert isinstance(thread, discord.Thread)

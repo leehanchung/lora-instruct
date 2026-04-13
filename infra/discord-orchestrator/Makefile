@@ -1,4 +1,4 @@
-.PHONY: help sync modal-deploy image restart deploy logs stop shell
+.PHONY: help sync sync-dev modal-deploy image restart deploy logs stop shell lint fmt check
 
 # Configurable knobs — override with e.g. `make deploy IMAGE=myimage`.
 BOT_NAME   ?= disco
@@ -8,7 +8,11 @@ MODAL_TOML ?= /root/.modal.toml
 
 help:
 	@echo "Targets:"
-	@echo "  make sync          uv sync the bot's Python deps"
+	@echo "  make sync          uv sync runtime deps"
+	@echo "  make sync-dev      uv sync runtime + dev deps (ruff, pytest)"
+	@echo "  make lint          ruff check (with --fix)"
+	@echo "  make fmt           ruff format (writes)"
+	@echo "  make check         ruff check + format --check (no writes, for CI/pre-commit)"
 	@echo "  make modal-deploy  deploy the Modal sandbox app (run when src/modal_dispatch/ changes)"
 	@echo "  make image         docker build the bot image"
 	@echo "  make restart       stop+remove+run the $(BOT_NAME) container"
@@ -19,6 +23,19 @@ help:
 
 sync:
 	uv sync
+
+sync-dev:
+	uv sync --extra dev
+
+lint: sync-dev
+	uv run ruff check --fix .
+
+fmt: sync-dev
+	uv run ruff format .
+
+check: sync-dev
+	uv run ruff check .
+	uv run ruff format --check .
 
 modal-deploy:
 	uv run modal deploy src/modal_dispatch/app.py
