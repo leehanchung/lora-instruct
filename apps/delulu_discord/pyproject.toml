@@ -1,7 +1,7 @@
 [project]
-name = "discord-orchestrator"
+name = "delulu-discord"
 version = "0.1.0"
-description = "Discord bot that dispatches Claude Code tasks to Modal Sandboxes"
+description = "Discord bot that dispatches Claude Code tasks to Modal sandboxes"
 requires-python = ">=3.14"
 dependencies = [
     "discord.py>=2.4,<3",
@@ -13,13 +13,20 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "ruff>=0.8",
+    "ruff>=0.15",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
 ]
 
 [project.scripts]
-bot = "src.bot.main:main"
+delulu-discord = "delulu_discord.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/delulu_discord"]
 
 [tool.ruff]
 target-version = "py314"

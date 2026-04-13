@@ -10,10 +10,10 @@ this to code-editing tasks on GitHub repos, and is specifically worried
 about **cold-start latency**: a naive `git clone` per invocation on a
 medium repo is 10–60s, which makes the bot feel dead.
 
-An orphaned `src/modal_dispatch/workspace.py` exists from an earlier pass
-with a `git clone --depth 1` implementation, never wired up. Its mechanism
-(full clone per session, no refresh) doesn't solve the cold-start problem
-and will be replaced.
+An earlier pass at repo provisioning lived in a now-deleted
+`workspace.py` with a `git clone --depth 1` implementation, never wired
+up. Its mechanism (full clone per session, no refresh) didn't solve the
+cold-start problem and is being replaced by the scheme below.
 
 ## Goals / non-goals
 
@@ -96,7 +96,7 @@ Warm path is dominated by Modal container spin-up — the right place to be.
 
 ## Files to create / modify
 
-### New: `src/modal_dispatch/repo_provisioner.py`
+### New: `apps/delulu_sandbox_modal/src/delulu_sandbox_modal/repo_provisioner.py`
 
 Runs *inside* the Modal sandbox. Pure stdlib + `subprocess`. No structlog
 dependency at module level (the sandbox import path is sensitive — see
@@ -144,7 +144,7 @@ rename locks.
 - Running `git -C <bare> worktree prune` on each provision to clean up
   stale registrations cheaply.
 
-### Modify: `src/modal_dispatch/app.py`
+### Modify: `apps/delulu_sandbox_modal/src/delulu_sandbox_modal/app.py`
 
 Change `run_claude_code` signature:
 
@@ -167,7 +167,7 @@ def run_claude_code(
   `total_ms` — primary observability for the cold-start work.
 - `volume.commit()` at the end already covers bare cache + worktree state.
 
-### Modify: `src/modal_dispatch/sandbox.py`
+### Modify: `apps/delulu_discord/src/delulu_discord/dispatcher.py`
 
 `SandboxDispatcher.run_task` signature change:
 
@@ -187,7 +187,7 @@ async def run_task(
 Pass everything through to `self._fn.remote(...)`. Drops `workspace_path`
 since the sandbox derives it now.
 
-### Modify: `src/bot/session_manager.py`
+### Modify: `apps/delulu_discord/src/delulu_discord/session_manager.py`
 
 - `Session` dataclass gains `repo_url: str | None` and `ref: str` fields.
 - `create_session(thread_id, repo_url=None, ref="HEAD")` actually stores
@@ -196,7 +196,7 @@ since the sandbox derives it now.
   (`f"/vol/workspaces/{self.thread_id}"`) for logging; no longer
   authoritative — the sandbox `provision_workspace` is the source of truth.
 
-### New: `src/bot/repo_config.py`
+### New: `apps/delulu_discord/src/delulu_discord/repo_config.py`
 
 Thin wrapper around `modal.Dict.from_name("discord-orchestrator-repo-config",
 create_if_missing=True)` for persistent channel → repo binding. Lives on
@@ -217,7 +217,7 @@ class RepoConfig:
     def unset(self, channel_id: int) -> None: ...
 ```
 
-### Modify: `src/bot/main.py` + `src/bot/handlers.py`
+### Modify: `apps/delulu_discord/src/delulu_discord/main.py` + `handlers.py`
 
 - Register slash commands via `discord.app_commands` (already supported in
   the `discord.py` version already in the lockfile). Two commands:
@@ -230,7 +230,7 @@ class RepoConfig:
 - Thread replies inherit the session's stored `repo_url` / `ref` from the
   `SessionManager` — no binding lookup on every reply.
 
-### Modify: `src/config/settings.py`
+### Modify: `apps/delulu_discord/src/delulu_discord/settings.py`
 
 Add:
 ```python
@@ -239,12 +239,12 @@ default_git_ref: str = "HEAD"
 provision_lock_timeout_seconds: int = 60
 ```
 
-### Delete: `src/modal_dispatch/workspace.py`
+### Note: the legacy `workspace.py` stub is already gone
 
-The bare-cache + worktree mechanism is fundamentally different from the
-stub `ensure_workspace` there, and nothing imports from it. Remove to
-avoid confusion. Grep for `workspace.py` / `ensure_workspace` first to
-confirm no stragglers.
+The earlier orphaned `workspace.py` under `src/modal_dispatch/` was
+removed as part of the app-separation refactor, so there's nothing to
+delete here — just grep for `ensure_workspace` before wiring in the new
+provisioner to confirm no stragglers crept back in.
 
 ## Commit-back flow (`/commit`)
 
@@ -310,15 +310,16 @@ Acquire with 60s timeout; surface a clean error on timeout.
 
 ## Critical files for implementation
 
-- `/Users/han/projects/lora-instruct/infra/discord-orchestrator/src/modal_dispatch/app.py` — signature change + integrate `provision_workspace`
-- `/Users/han/projects/lora-instruct/infra/discord-orchestrator/src/modal_dispatch/repo_provisioner.py` — **new**, all git logic
-- `/Users/han/projects/lora-instruct/infra/discord-orchestrator/src/modal_dispatch/sandbox.py` — dispatcher signature
-- `/Users/han/projects/lora-instruct/infra/discord-orchestrator/src/bot/main.py` — register slash commands (`/setrepo`, `/unsetrepo`, `/commit`)
-- `/Users/han/projects/lora-instruct/infra/discord-orchestrator/src/bot/handlers.py` — look up channel binding on dispatch
-- `/Users/han/projects/lora-instruct/infra/discord-orchestrator/src/bot/repo_config.py` — **new**, `modal.Dict`-backed binding store
-- `/Users/han/projects/lora-instruct/infra/discord-orchestrator/src/bot/session_manager.py` — store `repo_url` / `ref` on Session
-- `/Users/han/projects/lora-instruct/infra/discord-orchestrator/src/config/settings.py` — new config fields
-- `/Users/han/projects/lora-instruct/infra/discord-orchestrator/src/modal_dispatch/workspace.py` — **delete** (dead code)
+All paths are relative to the repo root:
+
+- `apps/delulu_sandbox_modal/src/delulu_sandbox_modal/app.py` — signature change + integrate `provision_workspace`
+- `apps/delulu_sandbox_modal/src/delulu_sandbox_modal/repo_provisioner.py` — **new**, all git logic
+- `apps/delulu_discord/src/delulu_discord/dispatcher.py` — pass `repo_url` / `ref` through to `run_claude_code`
+- `apps/delulu_discord/src/delulu_discord/main.py` — register slash commands (`/setrepo`, `/unsetrepo`, `/commit`)
+- `apps/delulu_discord/src/delulu_discord/handlers.py` — look up channel binding on dispatch
+- `apps/delulu_discord/src/delulu_discord/repo_config.py` — **new**, `modal.Dict`-backed binding store
+- `apps/delulu_discord/src/delulu_discord/session_manager.py` — store `repo_url` / `ref` on Session
+- `apps/delulu_discord/src/delulu_discord/settings.py` — new config fields
 
 ## Out of scope — park for v2
 

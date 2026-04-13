@@ -4,7 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - 'infra/discord-orchestrator/**'
+      - 'apps/**'
+      - 'Makefile'
       - '.github/workflows/discord-orchestrator-deploy.yml'
   workflow_dispatch:
 
@@ -22,26 +23,24 @@ jobs:
             set -euo pipefail
             export PATH="$HOME/.local/bin:$PATH"
 
-            cd /root/lora-instruct
+            cd /root/SMILE-factory
             OLD_SHA=$(git rev-parse HEAD)
             git pull --ff-only
             NEW_SHA=$(git rev-parse HEAD)
             echo "Deploying $OLD_SHA -> $NEW_SHA"
 
-            cd infra/discord-orchestrator
-
             # Redeploy the Modal sandbox app only if its source changed
             # (or on a workflow_dispatch / unchanged HEAD, where we can't
             # diff, so err on the side of redeploying).
             if [ "$OLD_SHA" = "$NEW_SHA" ] || \
-               git diff --name-only "$OLD_SHA" "$NEW_SHA" -- src/modal_dispatch/ | grep -q .; then
+               git diff --name-only "$OLD_SHA" "$NEW_SHA" -- apps/delulu_sandbox_modal/ | grep -q .; then
               echo "→ redeploying Modal sandbox app"
-              make sync modal-deploy
+              make -C apps/delulu_sandbox_modal sync modal-deploy
             else
-              echo "→ skipping Modal redeploy (no changes under src/modal_dispatch/)"
+              echo "→ skipping Modal redeploy (no changes under apps/delulu_sandbox_modal/)"
             fi
 
             # Rebuild the bot image and restart the container.
-            make deploy
+            make -C apps/delulu_discord deploy
             docker image prune -f
             echo "Deploy complete"

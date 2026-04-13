@@ -1,25 +1,24 @@
-.PHONY: help sync sync-dev modal-deploy image restart deploy logs stop shell lint fmt check
+.PHONY: help sync sync-dev lint fmt check image restart deploy logs stop shell
 
 # Configurable knobs — override with e.g. `make deploy IMAGE=myimage`.
 BOT_NAME   ?= disco
-IMAGE      ?= discord-orchestrator
+IMAGE      ?= delulu-discord
 ENV_FILE   ?= /root/disco.env
 MODAL_TOML ?= /root/.modal.toml
 
 help:
-	@echo "Targets:"
+	@echo "Targets (VPS deploy):"
 	@echo "  make sync          uv sync runtime deps"
-	@echo "  make sync-dev      uv sync runtime + dev deps (ruff, pytest)"
-	@echo "  make lint          ruff check (with --fix)"
-	@echo "  make fmt           ruff format (writes)"
-	@echo "  make check         ruff check + format --check (no writes, for CI/pre-commit)"
-	@echo "  make modal-deploy  deploy the Modal sandbox app (run when src/modal_dispatch/ changes)"
+	@echo "  make sync-dev      uv sync runtime + dev deps"
+	@echo "  make check         ruff check + format --check"
+	@echo "  make lint          ruff check --fix"
+	@echo "  make fmt           ruff format"
 	@echo "  make image         docker build the bot image"
 	@echo "  make restart       stop+remove+run the $(BOT_NAME) container"
 	@echo "  make deploy        image + restart (rebuild and relaunch the bot)"
 	@echo "  make logs          tail bot container logs"
 	@echo "  make stop          stop and remove the bot container"
-	@echo "  make shell         exec a shell inside the running bot container"
+	@echo "  make shell         exec a shell inside the running container"
 
 sync:
 	uv sync
@@ -27,18 +26,15 @@ sync:
 sync-dev:
 	uv sync --extra dev
 
+check: sync-dev
+	uv run ruff check .
+	uv run ruff format --check .
+
 lint: sync-dev
 	uv run ruff check --fix .
 
 fmt: sync-dev
 	uv run ruff format .
-
-check: sync-dev
-	uv run ruff check .
-	uv run ruff format --check .
-
-modal-deploy:
-	uv run modal deploy src/modal_dispatch/app.py
 
 image:
 	docker build -t $(IMAGE) .

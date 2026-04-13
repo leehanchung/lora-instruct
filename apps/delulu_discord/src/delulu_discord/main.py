@@ -9,10 +9,10 @@ import sys
 import discord
 import structlog
 
-from src.bot.handlers import MessageHandler
-from src.bot.session_manager import SessionManager
-from src.config import Settings
-from src.modal_dispatch.sandbox import SandboxDispatcher
+from delulu_discord.dispatcher import SandboxDispatcher
+from delulu_discord.handlers import MessageHandler
+from delulu_discord.session_manager import SessionManager
+from delulu_discord.settings import Settings
 
 logger = structlog.get_logger()
 
@@ -86,7 +86,7 @@ def create_bot(settings: Settings) -> discord.Client:
 
 
 def main() -> None:
-    """Entrypoint for `bot` console script."""
+    """Entrypoint for `delulu-discord` console script."""
     structlog.configure(
         processors=[
             structlog.processors.TimeStamper(fmt="iso"),

@@ -9,10 +9,9 @@ WORKDIR /app
 RUN pip install uv
 
 # Copy project files
-COPY pyproject.toml .python-version ./
+COPY pyproject.toml uv.lock .python-version ./
+COPY src/ src/
 RUN uv pip install --system .
 
-COPY src/ src/
-
 # The bot is lightweight — ~50MB RAM
-CMD ["python", "-m", "src.bot.main"]
+CMD ["python", "-m", "delulu_discord.main"]

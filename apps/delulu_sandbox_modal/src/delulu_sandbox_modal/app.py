@@ -1,14 +1,14 @@
 """Modal app definition — image, volume, secrets, and the sandbox function.
 
-This is the sole deploy target: `modal deploy src/modal_dispatch/app.py`.
+This is the sole deploy target: `modal deploy src/delulu_sandbox_modal/app.py`.
 
-The sandbox function `run_claude_code` is defined here (not in sandbox.py)
-so Modal's deploy importer and Python's package importer agree on a single
-`app` instance. Previously the function lived in sandbox.py and app.py did
-`from src.modal_dispatch import sandbox` at the bottom — which worked when
-imported as a package but broke under `modal deploy`, because Modal imports
-this file as a standalone script, which then imports `src.modal_dispatch.app`
-a *second* time and registers the decorator on a different `app` object.
+The sandbox function `run_claude_code` is defined here (not in a separate
+module) so Modal's deploy importer and Python's package importer agree on a
+single `app` instance. Previously the function lived in a sibling file and
+this module re-imported it at the bottom — which worked when imported as a
+package but broke under `modal deploy`, because Modal imports this file as a
+standalone script, which then imports the package path a *second* time and
+registers the decorator on a different `app` object.
 """
 
 from __future__ import annotations
