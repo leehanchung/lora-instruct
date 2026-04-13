@@ -30,26 +30,18 @@ jobs:
 
             cd infra/discord-orchestrator
 
-            # Redeploy the Modal sandbox app only if its source changed.
+            # Redeploy the Modal sandbox app only if its source changed
+            # (or on a workflow_dispatch / unchanged HEAD, where we can't
+            # diff, so err on the side of redeploying).
             if [ "$OLD_SHA" = "$NEW_SHA" ] || \
                git diff --name-only "$OLD_SHA" "$NEW_SHA" -- src/modal_dispatch/ | grep -q .; then
               echo "→ redeploying Modal sandbox app"
-              uv sync
-              uv run modal deploy src/modal_dispatch/app.py
+              make sync modal-deploy
             else
               echo "→ skipping Modal redeploy (no changes under src/modal_dispatch/)"
             fi
 
             # Rebuild the bot image and restart the container.
-            docker build -t discord-orchestrator .
-            docker stop disco 2>/dev/null || true
-            docker rm disco 2>/dev/null || true
-            docker run -d \
-              --name disco \
-              --restart=unless-stopped \
-              --env-file /root/disco.env \
-              -v /root/.modal.toml:/root/.modal.toml:ro \
-              discord-orchestrator
-
+            make deploy
             docker image prune -f
             echo "Deploy complete"

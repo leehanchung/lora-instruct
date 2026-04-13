@@ -4,12 +4,12 @@ Discord bot that dispatches Claude Code tasks to ephemeral Modal Sandboxes.
 
 ## How it works
 
-1. User sends a message in a `#claude-*` channel
-2. Bot creates a Discord thread and a new Claude Code session
+1. User `@mentions` the bot in any channel it can see
+2. Bot creates a Discord thread off that message and a new Claude Code session
 3. Bot dispatches the task to a Modal Sandbox (ephemeral container with Claude Code installed)
-4. Sandbox runs the task, returns output, dies
+4. Sandbox runs the task against a per-thread workspace on the Modal Volume, returns output, dies
 5. Bot posts the result in the thread
-6. Replies in the thread resume the same session (within 1hr TTL) via `claude --continue`
+6. Replies inside the thread auto-continue the same session via `claude --continue` — no need to re-mention the bot
 
 The bot process itself is tiny (~50MB RAM) and just dispatches jobs — all
 heavy lifting (and all Claude Code execution) happens inside Modal sandboxes.
@@ -23,7 +23,7 @@ flowchart LR
     U([User])
 
     subgraph Discord
-      Ch["#claude-* channel"]
+      Ch["any channel<br/>(@mention gated)"]
       Th["thread"]
     end
 
@@ -45,27 +45,28 @@ flowchart LR
       API["Claude API<br/>(Pro/Max OAuth)"]
     end
 
-    U -->|message| Ch
+    U -->|@mention| Ch
     Ch -->|gateway event| Bot
     Bot -->|create| Th
     Bot -->|Function.from_name.remote| Fn
-    Sec -.->|seeds .credentials.json| Vol
-    Vol <-.->|mount /vol| Fn
+    Sec -.->|seeds /vol/claude-home/.claude| Vol
+    Vol <-.->|HOME=/vol/claude-home<br/>cwd=/vol/workspaces/<thread_id>| Fn
     Fn -->|claude -p --continue| API
     Fn -->|stdout| Bot
     Bot -->|reply| Th
     Th --> U
 ```
 
-**Runtime request flow** — a message in a `#claude-*` channel triggers the
-bot to open a thread, look up or create a session, and call the deployed
-Modal function via `Function.from_name(...).remote(...)`. Modal spins up an
-ephemeral container from a pre-baked image (Node + Claude Code), mounts the
-persistent volume where `.credentials.json` lives, runs `claude --print`,
-captures stdout, persists any rotated OAuth tokens back to the volume, and
-exits. The bot posts the output in the thread. Follow-up replies in the
-same thread resume via `--continue`, which Claude Code resolves against the
-per-thread workspace directory on the volume.
+**Runtime request flow** — an `@mention` in any channel triggers the bot
+to open a thread, look up or create a session, and call the deployed Modal
+function via `Function.from_name(...).remote(...)`. Modal spins up an
+ephemeral container from a pre-baked image (Node + Claude Code), runs
+`claude --print` with `HOME=/vol/claude-home` and `cwd=/vol/workspaces/<thread_id>`,
+captures stdout, and exits. Because both Claude Code's state directory
+(`~/.claude/`) and the workspace are on the persistent Modal Volume,
+follow-up replies in the same thread can resume via `claude --continue`
+— which keys off cwd — even across ephemeral sandbox invocations and bot
+restarts.
 
 **Key invariants worth knowing:**
 
@@ -73,12 +74,16 @@ per-thread workspace directory on the volume.
   WebSocket connection and a hydrated Modal function reference. Any VPS
   with Docker can host it.
 - **Sandboxes are ephemeral but the volume is not.** Workspaces
-  (`/vol/workspaces/<session-id>`) and OAuth credentials
-  (`/vol/claude-auth/.credentials.json`) survive across invocations, which
-  is how both session resume and refresh-token rotation work.
+  (`/vol/workspaces/<thread_id>`) and Claude Code's entire home
+  (`/vol/claude-home/.claude/` — credentials, settings, session history)
+  survive across invocations. That's what makes session resume,
+  refresh-token rotation, and `--continue` all work.
 - **Auth is one-way from laptop → Modal Secret → Volume.** The secret only
   seeds the volume on first run; after that, the volume's copy is the
   source of truth. The droplet never stores Claude credentials at rest.
+- **`workspace_path` is deterministic per `thread_id`.** The in-memory
+  session map is a convenience; even if it's wiped by a bot restart, the
+  same Discord thread always maps to the same volume directory.
 
 ## Prerequisites
 
@@ -136,15 +141,18 @@ uv run modal secret create claude-oauth \
 rm -rf /tmp/claude-bot-home
 ```
 
-The sandbox persists `.credentials.json` to a Modal Volume so rotated refresh
-tokens survive across invocations. The secret only seeds the volume on first
-run — after that the volume copy is the source of truth. If auth ever breaks,
-delete `claude-auth/` from the volume and re-create the secret.
+The sandbox points `HOME` at `/vol/claude-home` so Claude Code's entire
+state directory (credentials, settings, and session history under
+`~/.claude/projects/`) lives on the Modal Volume. Rotated refresh tokens
+and `--continue` history both persist across ephemeral sandbox
+invocations. The secret only seeds the volume on first run — after that
+the volume copy is the source of truth. If auth ever breaks, delete
+`claude-home/` from the volume and re-create the secret.
 
 Deploy the sandbox app:
 
 ```bash
-uv run modal deploy src/modal_dispatch/app.py
+make modal-deploy
 ```
 
 ### 3. Run the bot
@@ -165,17 +173,20 @@ uv run bot
 #### Option B — Docker (any host)
 
 ```bash
-docker build -t discord-orchestrator .
-docker run -d --name disco --restart=unless-stopped \
-  --env-file .env \
-  -v ~/.modal.toml:/root/.modal.toml:ro \
-  discord-orchestrator
-
-docker logs -f disco
+make deploy      # = make image + make restart
+make logs        # tail the container
 ```
 
-The `~/.modal.toml` mount gives the bot the Modal credentials it needs to
-dispatch sandboxes. Without it, every dispatch will fail with an auth error.
+The Makefile expects `/root/disco.env` for the bot env file and
+`/root/.modal.toml` for the Modal credentials. Override via env vars if
+your paths differ:
+
+```bash
+make deploy ENV_FILE=$PWD/.env MODAL_TOML=$HOME/.modal.toml
+```
+
+The Modal credential mount is what lets the bot dispatch sandboxes —
+without it every dispatch fails with an auth error.
 
 ---
 
@@ -201,40 +212,59 @@ Then from your **laptop**, copy your Modal credentials up:
 scp ~/.modal.toml root@<droplet-ip>:/root/.modal.toml
 ```
 
-Back on the droplet, build and run:
+Create the bot env file at the path the Makefile expects:
 
 ```bash
-docker build -t discord-orchestrator .
-docker run -d --name disco --restart=unless-stopped \
-  --env-file .env \
-  -v /root/.modal.toml:/root/.modal.toml:ro \
-  discord-orchestrator
-docker logs -f disco
+cat > /root/disco.env <<'EOF'
+DISCORD_BOT_TOKEN=your-discord-bot-token-here
+EOF
+chmod 600 /root/disco.env
 ```
 
-`--restart=unless-stopped` keeps the bot alive across crashes and reboots.
+Then build and run the container via the Makefile:
 
-The Claude OAuth credentials are **never** stored on the droplet — they live
-only as a Modal Secret and inside the Modal Volume.
+```bash
+cd /root/lora-instruct/infra/discord-orchestrator
+make deploy      # docker build + stop/rm/run the disco container
+make logs        # tail to confirm it connected to Discord
+```
+
+The container runs with `--restart=unless-stopped`, so it survives
+crashes and reboots.
+
+The Claude OAuth credentials are **never** stored on the droplet — they
+live only as a Modal Secret and inside the Modal Volume. The droplet only
+holds the Discord bot token and Modal client credentials.
 
 ---
 
 ## Testing it
 
-In your Discord server, create a channel literally named `claude-test` (or
-anything starting with `claude-`). Send a message. Within ~10 seconds the bot
-should open a thread and post Claude Code's response.
+The bot only responds to explicit `@mentions`, so invite it to any
+channel you like — `#general` works. Send a message mentioning the bot:
+
+```
+@corchestra tell me a joke
+```
+
+Within ~10 seconds the bot should open a thread off your message (named
+after the prompt, e.g. `"tell me a joke"`) and post Claude Code's
+response inside it. Reply in the thread without mentioning the bot —
+it'll auto-continue the same Claude Code session, so follow-ups can
+reference earlier context.
 
 If nothing happens:
 
 ```bash
-docker logs disco
+make logs
 ```
 
 Common failure modes:
-- **No Discord events** — Message Content Intent not enabled, or bot not in the channel.
-- **Modal auth error** — `~/.modal.toml` not mounted into the container.
-- **Claude auth error** — `claude-oauth` secret missing, or refresh token invalidated.
+- **No reaction to your mention** — Message Content Intent not enabled,
+  or the bot isn't allowed to see / post in that channel.
+- **Modal auth error** — `/root/.modal.toml` not mounted into the container.
+- **Claude auth error** — `claude-oauth` secret missing, or `/vol/claude-home/.claude/.credentials.json` is stale (delete it on the volume and re-seed).
+- **`--continue` starts a new session** — usually means `HOME` isn't pointed at the volume inside the sandbox; check `sandbox.exec` logs in Modal.
 
 ---
 
@@ -243,14 +273,17 @@ Common failure modes:
 ```bash
 cd ~/lora-instruct && git pull
 cd infra/discord-orchestrator
-docker build -t discord-orchestrator . && docker restart disco
+make deploy                  # rebuild image + restart container
 ```
 
-If you changed anything under `src/modal_dispatch/`, also redeploy the sandbox:
+If you changed anything under `src/modal_dispatch/`, also redeploy the
+Modal sandbox:
 
 ```bash
-uv run modal deploy src/modal_dispatch/app.py
+make modal-deploy
 ```
+
+`make help` lists all available targets.
 
 ---
 
@@ -260,11 +293,12 @@ The workflow at
 [`.github/workflows/discord-orchestrator-deploy.yml`](../../.github/workflows/discord-orchestrator-deploy.yml)
 deploys on every push to `main` that touches `infra/discord-orchestrator/**`.
 
-It's a single job that SSHes into the droplet and runs the same commands
-you'd run manually: `git pull`, rebuild the Docker image, restart the
-container, and (only if files under `src/modal_dispatch/` actually changed)
-redeploy the Modal sandbox app. No container registry, no image pushes —
-the droplet is both the build and run target.
+It's a single job that SSHes into the droplet and runs the same
+`make` targets you'd run manually: `git pull`, then `make deploy`
+(rebuild image + restart container), plus `make sync modal-deploy`
+conditionally when files under `src/modal_dispatch/` actually changed.
+No container registry, no image pushes — the droplet is both the build
+and run target.
 
 ### One-time droplet prep
 
@@ -345,12 +379,7 @@ git log --oneline -10             # find the commit you want to roll back to
 git reset --hard <good-sha>
 
 cd infra/discord-orchestrator
-docker build -t discord-orchestrator .
-docker stop disco && docker rm disco
-docker run -d --name disco --restart=unless-stopped \
-  --env-file /root/disco.env \
-  -v /root/.modal.toml:/root/.modal.toml:ro \
-  discord-orchestrator
+make deploy                       # or `make sync modal-deploy deploy` if sandbox code rolled back too
 ```
 
 Then force-revert on the remote once you've confirmed the rollback works,
@@ -364,16 +393,16 @@ so the next push doesn't redeploy the broken version.
 discord-orchestrator/
 ├── src/
 │   ├── bot/
-│   │   ├── main.py              # Bot entrypoint
+│   │   ├── main.py              # Bot entrypoint + @mention gating
 │   │   ├── handlers.py          # Message routing + result posting
 │   │   └── session_manager.py   # Thread ↔ session mapping with TTL
 │   ├── modal_dispatch/
-│   │   ├── app.py               # Modal app, image, volume, secrets
-│   │   ├── sandbox.py           # Claude Code execution + dispatcher
-│   │   └── workspace.py         # Workspace provisioning (git clone)
+│   │   ├── app.py               # Modal App, image, volume, secret, sandbox function
+│   │   └── sandbox.py           # SandboxDispatcher (bot-side wrapper around Function.from_name)
 │   └── config/
 │       └── settings.py          # Pydantic Settings from env vars
 ├── ARCHITECTURE.md              # Full design doc
+├── Makefile                     # make deploy / modal-deploy / logs / ...
 ├── Dockerfile                   # For hosting the bot process
 ├── pyproject.toml               # uv project config
 └── .env.example                 # Environment variable template
