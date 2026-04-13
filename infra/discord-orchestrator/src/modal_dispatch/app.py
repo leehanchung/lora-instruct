@@ -28,7 +28,11 @@ volume = modal.Volume.from_name("claude-workspaces", create_if_missing=True)
 # ── Container Image ──────────────────────────────────────────
 # Pre-bake Claude Code into the image so sandbox startup is fast.
 sandbox_image = (
-    modal.Image.debian_slim(python_version="3.14")
+    # Pinned to 3.12 because Modal's default 2023.12 Image Builder only
+    # supports 3.10–3.12. The bot container runs 3.14; the sandbox just
+    # execs `claude` in a subprocess so the Python version inside is
+    # mostly immaterial. Upgrade to the 2025.06 Image Builder to match.
+    modal.Image.debian_slim(python_version="3.12")
     .apt_install("git", "curl")
     # app.py is imported inside the sandbox to call run_claude_code, so any
     # third-party module it imports at module level must be present here too.
