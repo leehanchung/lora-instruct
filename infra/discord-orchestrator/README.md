@@ -196,99 +196,101 @@ The workflow at
 [`.github/workflows/discord-orchestrator-deploy.yml`](../../.github/workflows/discord-orchestrator-deploy.yml)
 deploys on every push to `main` that touches `infra/discord-orchestrator/**`.
 
-It does three things:
-
-1. **`build-and-push`** — builds the bot's Docker image and pushes it to
-   `ghcr.io/leehanchung/discord-orchestrator` (tagged `:latest` and `:<sha>`).
-2. **`deploy-modal`** — runs `modal deploy src/modal_dispatch/app.py`.
-   Only fires when files under `src/modal_dispatch/**` actually changed.
-3. **`deploy-bot`** — SSHes into the droplet, pulls the new image, and
-   restarts the container.
+It's a single job that SSHes into the droplet and runs the same commands
+you'd run manually: `git pull`, rebuild the Docker image, restart the
+container, and (only if files under `src/modal_dispatch/` actually changed)
+redeploy the Modal sandbox app. No container registry, no image pushes —
+the droplet is both the build and run target.
 
 ### One-time droplet prep
 
-The CI workflow assumes a few things already exist on the droplet:
+The workflow assumes the droplet is already set up as described in
+[Deploying to a Digital Ocean droplet](#deploying-to-a-digital-ocean-droplet)
+above — i.e.:
 
-```bash
-ssh root@<droplet-ip>
+- Docker installed
+- `/root/lora-instruct` checked out (the workflow runs `git pull` inside it)
+- `/root/disco.env` containing `DISCORD_BOT_TOKEN=...`
+- `/root/.modal.toml` as a real file (from `uv run modal token new` on the droplet)
+- `uv` installed and on `$PATH` for the `root` user (needed for the
+  conditional `uv run modal deploy` step)
 
-# 1. Docker installed
-apt update && apt install -y docker.io
-systemctl enable --now docker
-
-# 2. Modal credentials at a stable path (copy from your laptop with scp)
-ls /root/.modal.toml
-
-# 3. Bot env file at a stable path, NOT inside any git checkout
-cat > /root/disco.env <<'EOF'
-DISCORD_BOT_TOKEN=your-discord-bot-token-here
-EOF
-chmod 600 /root/disco.env
-```
-
-You don't need to clone the repo on the droplet anymore — the deploy job
-pulls the prebuilt image directly from GHCR. The first deploy will create
-the `disco` container; subsequent deploys recreate it.
+If you can run the manual deploy from the [Updating manually](#updating-manually)
+section successfully, the workflow will work too — it runs the same commands.
 
 ### One-time GitHub setup
 
-You need a dedicated SSH deploy key (don't reuse your personal key):
+Generate a dedicated SSH deploy key (don't reuse your personal key):
 
 ```bash
 # On your laptop
 ssh-keygen -t ed25519 -f ~/.ssh/disco_deploy -N "" -C "github-actions-disco"
 
-# Add the public half to the droplet
+# Install the public half on the droplet
 ssh-copy-id -i ~/.ssh/disco_deploy.pub root@<droplet-ip>
-# (or manually append it to /root/.ssh/authorized_keys)
 
-# Print the private half — copy this for the GitHub secret
+# Test the key works
+ssh -i ~/.ssh/disco_deploy root@<droplet-ip> 'echo ok'
+
+# Print the private half — you'll paste this into GitHub
 cat ~/.ssh/disco_deploy
 ```
 
-You also need a Modal API token for CI. Generate one at
-https://modal.com/settings/tokens (or `modal token new --profile ci` and
-read the values out of `~/.modal.toml`).
-
-Then add these as **Repository secrets** under
-**Settings → Secrets and variables → Actions** on GitHub:
+Add these as **Repository secrets** under **Settings → Secrets and variables
+→ Actions** on GitHub:
 
 | Secret | Value |
 |---|---|
 | `DROPLET_HOST` | The droplet's public IPv4 address |
-| `DROPLET_SSH_KEY` | Contents of `~/.ssh/disco_deploy` (the private key) |
-| `MODAL_TOKEN_ID` | From `~/.modal.toml` — the `token_id` field |
-| `MODAL_TOKEN_SECRET` | From `~/.modal.toml` — the `token_secret` field |
+| `DROPLET_SSH_KEY` | Full contents of `~/.ssh/disco_deploy` (including the `-----BEGIN`/`-----END` lines) |
 
-`GITHUB_TOKEN` is provided automatically by Actions and is used to push the
-image to GHCR — no setup needed.
+That's it — no Modal tokens or registry secrets needed, because everything
+happens on the droplet which already has its own Modal auth.
 
-### Make the GHCR image public (optional but recommended)
+### Testing the workflow
 
-By default, packages pushed to GHCR inherit "private" until you flip them.
-A private image means the droplet would need to authenticate to pull it.
-Since this repo is public, just make the package public too:
+The workflow has a `workflow_dispatch` trigger, so you can run it manually
+without pushing a commit:
 
-1. After the first successful build, go to
-   https://github.com/users/leehanchung/packages/container/discord-orchestrator/settings
-2. Scroll to **Danger Zone → Change visibility → Public**.
+1. GitHub → **Actions** tab → **discord-orchestrator deploy** →
+   **Run workflow** → pick `main` → **Run workflow**.
+2. Watch the logs in real time. You should see the SSH step print the
+   old/new SHAs, the Modal redeploy (or skip) message, the Docker build,
+   and `Deploy complete`.
+3. On the droplet, `docker ps` should show the `disco` container running,
+   and `docker logs disco` should show a clean startup.
 
-Now the droplet can `docker pull` with no auth.
+If it fails, the SSH step prints everything to the workflow log — no need
+to SSH in to debug. Common failure modes:
 
-### Triggering and rolling back
+- **"Permission denied (publickey)"** — `DROPLET_SSH_KEY` is wrong, or the
+  public key isn't in `/root/.ssh/authorized_keys` on the droplet.
+- **"uv: command not found"** — `uv` isn't on the `root` user's `$PATH` in
+  non-interactive SSH sessions. Fix: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> /root/.bashrc` on the droplet (the workflow already re-exports this inside the script, but this ensures it also works for manual SSH).
+- **"error: unable to connect to Docker"** — `systemctl status docker` on
+  the droplet, `systemctl enable --now docker` if it's not running.
 
-- **Trigger:** any push to `main` that changes `infra/discord-orchestrator/**`,
-  or hit "Run workflow" manually under the **Actions** tab.
-- **Rollback:** SSH into the droplet and re-run the container with the
-  previous SHA tag:
-  ```bash
-  docker pull ghcr.io/leehanchung/discord-orchestrator:<old-sha>
-  docker stop disco && docker rm disco
-  docker run -d --name disco --restart=unless-stopped \
-    --env-file /root/disco.env \
-    -v /root/.modal.toml:/root/.modal.toml:ro \
-    ghcr.io/leehanchung/discord-orchestrator:<old-sha>
-  ```
+### Rollback
+
+Rollback is a manual `git` operation on the droplet:
+
+```bash
+ssh root@<droplet-ip>
+cd /root/lora-instruct
+git log --oneline -10             # find the commit you want to roll back to
+git reset --hard <good-sha>
+
+cd infra/discord-orchestrator
+docker build -t discord-orchestrator .
+docker stop disco && docker rm disco
+docker run -d --name disco --restart=unless-stopped \
+  --env-file /root/disco.env \
+  -v /root/.modal.toml:/root/.modal.toml:ro \
+  discord-orchestrator
+```
+
+Then force-revert on the remote once you've confirmed the rollback works,
+so the next push doesn't redeploy the broken version.
 
 ---
 
