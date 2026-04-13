@@ -225,12 +225,11 @@ revertable:
 ### Commit 1 — emit events (no UX change yet)
 
 - Add `apps/delulu_sandbox_modal/src/delulu_sandbox_modal/events.py`
-  with the typed event dicts. **Note:** since the app-separation
-  refactor landed, `delulu_discord` cannot import from
-  `delulu_sandbox_modal`. For v1 the bot will consume events as
-  untyped dicts; promoting `events.py` to a shared library is the
-  revisit point app-separation explicitly parked for streaming to
-  decide.
+  with the typed event dicts. **Note:** the two apps are independent
+  packages — `delulu_discord` cannot import from `delulu_sandbox_modal`.
+  For v1 the bot will consume events as untyped dicts. If the duck-typing
+  gets painful, promote `events.py` to a third top-level package under
+  `apps/` (e.g. `apps/delulu_shared`) that both sides depend on.
 - Rewrite `run_claude_code` as a generator that parses stream-json and
   yields events.
 - Temporarily keep `SandboxDispatcher` synchronous: have it collect

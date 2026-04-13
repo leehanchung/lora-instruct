@@ -241,10 +241,10 @@ provision_lock_timeout_seconds: int = 60
 
 ### Note: the legacy `workspace.py` stub is already gone
 
-The earlier orphaned `workspace.py` under `src/modal_dispatch/` was
-removed as part of the app-separation refactor, so there's nothing to
-delete here — just grep for `ensure_workspace` before wiring in the new
-provisioner to confirm no stragglers crept back in.
+The earlier orphaned `workspace.py` was removed when the two apps were
+split, so there's nothing to delete here — just grep for
+`ensure_workspace` before wiring in the new provisioner to confirm no
+stragglers crept back in.
 
 ## Commit-back flow (`/commit`)
 
