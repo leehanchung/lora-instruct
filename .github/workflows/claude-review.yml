@@ -1,16 +1,26 @@
 name: PR checks
 
-# Auto-reviews pull requests with Claude Code using a Pro/Max OAuth token
-# (no Anthropic API key needed). Reviews count against subscription rate
-# limits — the concurrency block below collapses rapid-fire pushes so we
-# don't burn quota re-reviewing the same PR on every force-push.
+# Two Claude-powered jobs live in this workflow:
+#
+#   `review` — fires on every pull_request event. Read-only on repo
+#              contents. Produces a formal PR review (approve /
+#              request-changes / comment) via `gh pr review`.
+#
+#   `fix`    — fires when a reviewer comments `@claude` on a PR. Has
+#              write access to contents so it can push a fix branch
+#              and open a nested PR with proposed changes. Does NOT
+#              push directly to the original PR branch — the nested PR
+#              is the review surface.
+#
+# Both use a Pro/Max OAuth token (no Anthropic API key needed) and
+# count against subscription rate limits. Per-job concurrency groups
+# collapse rapid-fire events within the same job type without letting
+# a push cancel an in-progress fix run (or vice versa).
 #
 # Setup:
 #   1. Run `claude setup-token` locally → copy the printed token
 #   2. Add as a repo secret named CLAUDE_CODE_OAUTH_TOKEN
 #   3. (Optional) run `/install-github-app` inside Claude Code to auto-wire
-#
-# On-demand reviews: comment `@claude <request>` on a PR or issue.
 
 on:
   pull_request:
@@ -18,20 +28,21 @@ on:
   issue_comment:
     types: [created]
 
-concurrency:
-  group: claude-review-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
-  cancel-in-progress: true
-
 jobs:
   review:
     # Pinned so branch protection can require the check by a stable name
     # (`Claude PR review`) independent of workflow/file renames.
     name: Claude PR review
-    # Skip drafts by default — review them on demand via @claude mention
+    # Only fires on pull_request. `@claude` mentions on PRs go to the
+    # `fix` job below, not here — the two have different permissions
+    # and prompts.
     if: >-
-      (github.event_name == 'pull_request' && github.event.pull_request.draft == false)
-      || (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude'))
+      github.event_name == 'pull_request'
+      && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
+    concurrency:
+      group: claude-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     permissions:
       contents: read
       pull-requests: write
@@ -115,3 +126,49 @@ jobs:
             own pull request" error, fall back to `--comment` with the
             same body — that happens when the PR author is the same
             identity the workflow runs as.
+
+  fix:
+    # On-demand fix flow: someone comments `@claude <request>` on a PR.
+    # The agent makes the requested changes and opens a *nested* PR
+    # against the source PR's head branch, so the fix is reviewable as
+    # a diff rather than silently rewriting the PR under the author.
+    name: Claude PR fix
+    if: >-
+      github.event_name == 'issue_comment'
+      && github.event.issue.pull_request != null
+      && contains(github.event.comment.body, '@claude')
+    runs-on: ubuntu-latest
+    concurrency:
+      # Separate from the review concurrency group so a fresh push
+      # doesn't cancel an in-progress fix run and vice versa.
+      group: claude-fix-${{ github.event.issue.number }}
+      cancel-in-progress: true
+    permissions:
+      # `write` on contents is what lets the fix branch get pushed.
+      # The narrower `pull-requests: write` covers opening the nested
+      # PR. Tag mode's built-in gatekeeping only runs this for actors
+      # with repo write access, so a random PR commenter can't abuse it.
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          show_full_output: true
+          # Broader whitelist than the review job — the fix flow needs
+          # to run git (add/commit/push), gh (create the nested PR),
+          # and the built-in edit tools (Edit/Write/Read/Glob/Grep).
+          # Claude Code's --allowedTools replaces the default allowlist
+          # when set, so the built-ins have to be re-listed explicitly.
+          # WebFetch is included so the agent can read PR context from
+          # the GitHub REST API the same way the review job does.
+          claude_args: >-
+            --allowedTools "Edit,Write,Read,Glob,Grep,WebFetch,Bash(git:*),Bash(gh:*)"
+          # No explicit `prompt:` — in tag mode (auto-detected from the
+          # issue_comment + @claude mention), the action uses the
+          # comment body as the instruction and its built-in
+          # branch-and-PR machinery (see `branch_prefix` /
+          # `branch_name_template` in the action inputs) opens the
+          # nested PR against the source PR's head branch.
