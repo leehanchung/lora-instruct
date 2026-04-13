@@ -1,6 +1,12 @@
-"""Sandbox dispatcher — called from the bot process to invoke the deployed
-Modal function. The function itself lives in app.py; see the comment there
-for why the decoration can't live here."""
+"""Client-side dispatcher — calls the deployed Modal function from the bot.
+
+This file was historically named ``sandbox.py`` and lived under
+``modal_dispatch/``, but it has always been a *client-side* wrapper around
+``modal.Function.from_name(...).remote()``. It never runs inside a sandbox.
+The rename makes that boundary explicit: nothing in this module ships to
+Modal; it only dispatches to a Modal App that was deployed from the sibling
+``delulu_sandbox_modal`` package.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +17,7 @@ import modal
 import structlog
 
 if TYPE_CHECKING:
-    from src.config import Settings
+    from delulu_discord.settings import Settings
 
 logger = structlog.get_logger()
 
