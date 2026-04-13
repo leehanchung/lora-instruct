@@ -35,12 +35,15 @@ class SandboxDispatcher:
         prompt: str,
         *,
         resume: bool = False,
+        attachments: list[tuple[str, bytes]] | None = None,
+        message_id: int | None = None,
     ) -> str:
         """Dispatch a task to Modal and return the output."""
         logger.info(
             "dispatch.start",
             session_id=session_id,
             resume=resume,
+            attachment_count=len(attachments) if attachments else 0,
         )
 
         # .remote() is synchronous — run in executor to not block the bot
@@ -52,6 +55,8 @@ class SandboxDispatcher:
                 workspace_path=workspace_path,
                 prompt=prompt,
                 resume=resume,
+                attachments=attachments or [],
+                message_id=message_id,
             ),
         )
 

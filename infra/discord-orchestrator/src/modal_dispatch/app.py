@@ -70,13 +70,43 @@ def run_claude_code(
     prompt: str,
     *,
     resume: bool = False,
+    attachments: list[tuple[str, bytes]] | None = None,
+    message_id: int | None = None,
 ) -> str:
     """Execute a Claude Code task inside an ephemeral Modal sandbox."""
     import os
+    import re
     import shutil
     import subprocess
 
     os.makedirs(workspace_path, exist_ok=True)
+
+    # ── Materialize Discord attachments onto the workspace ───
+    # Claude Code only sees what's in the prompt and on disk, so any files
+    # the user attached have to be written into the workspace and then
+    # referenced explicitly in the prompt. We scope each message's files
+    # under _attachments/<message_id>/ so repeated uploads in the same
+    # thread can't collide on filename.
+    attachment_lines: list[str] = []
+    if attachments:
+        bucket = str(message_id) if message_id is not None else "latest"
+        att_dir = os.path.join(workspace_path, "_attachments", bucket)
+        os.makedirs(att_dir, exist_ok=True)
+        for raw_name, data in attachments:
+            safe = re.sub(r"[^A-Za-z0-9._-]", "_", raw_name) or "file"
+            path = os.path.join(att_dir, safe)
+            with open(path, "wb") as f:
+                f.write(data)
+            rel = os.path.relpath(path, workspace_path)
+            attachment_lines.append(f"- {rel} ({len(data)} bytes)")
+
+    if attachment_lines:
+        prompt = (
+            f"{prompt}\n\n"
+            "[The user attached the following files to this message. "
+            "Read them from the workspace before responding:]\n"
+            + "\n".join(attachment_lines)
+        )
 
     # ── Persistent Claude Code home on the Modal Volume ──────
     # Point HOME at /vol/claude-home so Claude Code reads and writes its

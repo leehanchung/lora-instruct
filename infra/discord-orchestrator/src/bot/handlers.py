@@ -34,15 +34,19 @@ class MessageHandler:
         thread = await message.create_thread(name=thread_name)
 
         session = self.sessions.create_session(thread.id)
+        attachments = await _download_attachments(message)
 
         logger.info(
             "task.new",
             thread_id=thread.id,
             session_id=session.session_id,
             prompt_preview=prompt[:80],
+            attachment_count=len(attachments),
         )
 
-        await self._dispatch_and_respond(thread, session, prompt, resume=False)
+        await self._dispatch_and_respond(
+            thread, session, prompt, attachments, message.id, resume=False
+        )
 
     async def handle_thread_reply(self, message: discord.Message, prompt: str) -> None:
         """Reply inside an existing thread → resume or start new session."""
@@ -51,21 +55,27 @@ class MessageHandler:
 
         session, is_new = self.sessions.get_or_create(thread.id)
         resume = not is_new
+        attachments = await _download_attachments(message)
 
         logger.info(
             "task.reply",
             thread_id=thread.id,
             session_id=session.session_id,
             resume=resume,
+            attachment_count=len(attachments),
         )
 
-        await self._dispatch_and_respond(thread, session, prompt, resume=resume)
+        await self._dispatch_and_respond(
+            thread, session, prompt, attachments, message.id, resume=resume
+        )
 
     async def _dispatch_and_respond(
         self,
         thread: discord.Thread,
         session,
         prompt: str,
+        attachments: list[tuple[str, bytes]],
+        message_id: int,
         *,
         resume: bool,
     ) -> None:
@@ -78,6 +88,8 @@ class MessageHandler:
                     workspace_path=session.workspace_path,
                     prompt=prompt,
                     resume=resume,
+                    attachments=attachments,
+                    message_id=message_id,
                 )
             except Exception:
                 logger.exception("task.failed", session_id=session.session_id)
@@ -109,3 +121,24 @@ class MessageHandler:
                 filename="claude-output.txt",
             )
             await thread.send("Output was too long for a message:", file=file)
+
+
+async def _download_attachments(message: discord.Message) -> list[tuple[str, bytes]]:
+    """Download every attachment on a Discord message as (filename, bytes).
+
+    Claude Code inside the sandbox only sees the text prompt, so anything the
+    user attached has to be fetched here and shipped across to Modal as bytes.
+    """
+    out: list[tuple[str, bytes]] = []
+    for att in message.attachments:
+        try:
+            data = await att.read()
+        except Exception:
+            logger.exception(
+                "attachment.download_failed",
+                filename=att.filename,
+                size=att.size,
+            )
+            continue
+        out.append((att.filename, data))
+    return out
