@@ -104,8 +104,7 @@ def run_claude_code(
         prompt = (
             f"{prompt}\n\n"
             "[The user attached the following files to this message. "
-            "Read them from the workspace before responding:]\n"
-            + "\n".join(attachment_lines)
+            "Read them from the workspace before responding:]\n" + "\n".join(attachment_lines)
         )
 
     # ── Persistent Claude Code home on the Modal Volume ──────
