@@ -38,3 +38,10 @@ sandbox_image = (
 #   modal secret create claude-oauth \
 #     CLAUDE_CREDENTIALS_JSON="$(cat ~/.claude/.credentials.json)"
 claude_oauth_secret = modal.Secret.from_name("claude-oauth")
+
+# ── Register functions on the App ────────────────────────────
+# This import has to live at the bottom: sandbox.py imports the names
+# defined above, then applies @app.function to register run_claude_code.
+# Without this, `modal deploy src/modal_dispatch/app.py` would register an
+# empty App — the decorator never runs.
+from src.modal_dispatch import sandbox  # noqa: E402, F401
