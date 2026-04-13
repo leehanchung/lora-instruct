@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import modal
 import structlog
 
-from src.modal_dispatch.app import anthropic_secret, app, sandbox_image, volume
+from src.modal_dispatch.app import app, claude_oauth_secret, sandbox_image, volume
 
 if TYPE_CHECKING:
     from src.config import Settings
@@ -20,7 +20,7 @@ logger = structlog.get_logger()
 @app.function(
     image=sandbox_image,
     volumes={"/vol": volume},
-    secrets=[anthropic_secret],
+    secrets=[claude_oauth_secret],
     memory=4096,
     timeout=300,
 )
@@ -43,10 +43,35 @@ def run_claude_code(
         Claude Code's stdout output as a string.
     """
     import os
+    import shutil
     import subprocess
 
     # Ensure workspace directory exists
     os.makedirs(workspace_path, exist_ok=True)
+
+    # ── Claude Code OAuth credentials ────────────────────────
+    # Persisted on the volume so refreshed/rotated refresh tokens survive
+    # across sandbox invocations. Seeded from the secret on first run.
+    persisted_creds = "/vol/claude-auth/.credentials.json"
+    home_claude_dir = os.path.expanduser("~/.claude")
+    home_creds = os.path.join(home_claude_dir, ".credentials.json")
+    os.makedirs(home_claude_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(persisted_creds), exist_ok=True)
+
+    if not os.path.exists(persisted_creds):
+        seed = os.environ.get("CLAUDE_CREDENTIALS_JSON")
+        if not seed:
+            raise RuntimeError(
+                "No persisted Claude credentials and CLAUDE_CREDENTIALS_JSON "
+                "secret is empty — re-create the claude-oauth Modal secret."
+            )
+        with open(persisted_creds, "w") as f:
+            f.write(seed)
+        os.chmod(persisted_creds, 0o600)
+        volume.commit()
+
+    shutil.copyfile(persisted_creds, home_creds)
+    os.chmod(home_creds, 0o600)
 
     # Build the claude command
     cmd = [
@@ -59,11 +84,13 @@ def run_claude_code(
     if resume:
         cmd.append("--resume")
 
-    # Set Claude Code's session/project directory so --resume works across invocations
+    # Set Claude Code's session/project directory so --resume works across invocations.
+    # ANTHROPIC_API_KEY is intentionally stripped — Claude Code prefers it over OAuth
+    # if present, which would bypass the Pro/Max subscription auth.
     env = {
-        **os.environ,
-        "CLAUDE_PROJECT_DIR": workspace_path,
+        k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"
     }
+    env["CLAUDE_PROJECT_DIR"] = workspace_path
 
     logger.info(
         "sandbox.exec",
@@ -89,6 +116,12 @@ def run_claude_code(
             returncode=result.returncode,
             stderr=result.stderr[:500],
         )
+
+    # Persist any refreshed OAuth credentials back to the volume. The refresh
+    # token rotates on every refresh, so the next sandbox MUST see the new file.
+    if os.path.exists(home_creds):
+        shutil.copyfile(home_creds, persisted_creds)
+        os.chmod(persisted_creds, 0o600)
 
     # Commit volume changes so they persist for the next invocation
     volume.commit()

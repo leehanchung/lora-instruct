@@ -30,5 +30,11 @@ sandbox_image = (
 )
 
 # ── Secrets ──────────────────────────────────────────────────
-# Anthropic API key — create with: modal secret create anthropic-key ANTHROPIC_API_KEY=sk-...
-anthropic_secret = modal.Secret.from_name("anthropic-key")
+# Claude Code OAuth credentials (Pro/Max subscription). Seeded into the volume on
+# first run, then refreshed-in-place on the volume so rotated refresh tokens
+# survive across sandbox invocations.
+#
+# Create with:
+#   modal secret create claude-oauth \
+#     CLAUDE_CREDENTIALS_JSON="$(cat ~/.claude/.credentials.json)"
+claude_oauth_secret = modal.Secret.from_name("claude-oauth")

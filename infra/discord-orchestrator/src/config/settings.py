@@ -14,9 +14,6 @@ class Settings(BaseSettings):
     discord_bot_token: str
     discord_channel_prefix: str = "claude"  # only respond in channels starting with this
 
-    # ── Anthropic (injected into Modal sandboxes) ────────────
-    anthropic_api_key: str
-
     # ── Modal ────────────────────────────────────────────────
     modal_volume_name: str = "claude-workspaces"
     modal_app_name: str = "discord-orchestrator"
