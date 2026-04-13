@@ -106,7 +106,12 @@ def run_claude_code(
         "--output-format", "text",
     ]
     if resume:
-        cmd.append("--resume")
+        # --continue resumes the most recent Claude Code session in the cwd,
+        # which is our per-thread workspace — so this correctly picks up the
+        # right session without us having to track Claude Code's internal UUIDs.
+        # (--resume requires an explicit session ID and is incompatible with
+        # bot-generated session identifiers.)
+        cmd.append("--continue")
 
     # ANTHROPIC_API_KEY is stripped — Claude Code prefers it over OAuth if set,
     # which would bypass the Pro/Max subscription auth.
