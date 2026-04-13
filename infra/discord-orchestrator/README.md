@@ -87,7 +87,7 @@ restarts.
 
 ## Prerequisites
 
-- Python 3.11+ and [uv](https://docs.astral.sh/uv/)
+- Python 3.14 and [uv](https://docs.astral.sh/uv/)
 - A Discord account
 - A [Modal](https://modal.com/) account (`uv tool install modal` or `pip install modal`)
 - A Claude Pro or Max subscription (Claude Code authenticates via OAuth, no API key needed)

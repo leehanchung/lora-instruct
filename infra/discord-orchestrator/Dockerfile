@@ -1,7 +1,7 @@
 # Dockerfile for the always-on Discord bot process.
 # This does NOT run Claude Code — it only hosts the bot that dispatches to Modal.
 
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 WORKDIR /app
 

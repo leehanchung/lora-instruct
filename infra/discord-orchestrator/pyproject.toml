@@ -2,7 +2,7 @@
 name = "discord-orchestrator"
 version = "0.1.0"
 description = "Discord bot that dispatches Claude Code tasks to Modal Sandboxes"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
     "discord.py>=2.4,<3",
     "modal>=1.0",
@@ -22,7 +22,7 @@ dev = [
 bot = "src.bot.main:main"
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py314"
 line-length = 100
 
 [tool.ruff.lint]
