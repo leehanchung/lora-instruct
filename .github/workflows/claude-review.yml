@@ -1,4 +1,4 @@
-name: Claude PR review
+name: PR checks
 
 # Auto-reviews pull requests with Claude Code using a Pro/Max OAuth token
 # (no Anthropic API key needed). Reviews count against subscription rate
@@ -24,6 +24,9 @@ concurrency:
 
 jobs:
   review:
+    # Pinned so branch protection can require the check by a stable name
+    # (`Claude PR review`) independent of workflow/file renames.
+    name: Claude PR review
     # Skip drafts by default — review them on demand via @claude mention
     if: >-
       (github.event_name == 'pull_request' && github.event.pull_request.draft == false)

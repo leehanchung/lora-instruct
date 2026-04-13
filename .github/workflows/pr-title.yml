@@ -1,0 +1,36 @@
+name: PR title
+
+# Enforces Conventional Commits on PR titles. Since main uses squash-merge
+# with the PR title as the commit subject, this is what actually keeps
+# main's history conventional — no commit-msg hook required.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            docs
+            refactor
+            test
+            chore
+            ci
+            build
+            perf
+            style
+          requireScope: false
+          subjectPattern: ^[A-Za-z].+[^.]$
+          subjectPatternError: |
+            PR title subject must start with a letter and not end with a period.
