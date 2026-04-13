@@ -139,6 +139,14 @@ class SandboxDispatcher:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        # In Modal 1.x, dispatching to a deployed function from outside the App
+        # requires a hydrated reference obtained via Function.from_name — the
+        # decorated symbol imported above is only valid inside `modal deploy`
+        # / `modal run`, not from a long-lived client like this bot.
+        self._fn = modal.Function.from_name(
+            settings.modal_app_name,
+            "run_claude_code",
+        )
 
     async def run_task(
         self,
@@ -159,7 +167,7 @@ class SandboxDispatcher:
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None,
-            lambda: run_claude_code.remote(
+            lambda: self._fn.remote(
                 session_id=session_id,
                 workspace_path=workspace_path,
                 prompt=prompt,
