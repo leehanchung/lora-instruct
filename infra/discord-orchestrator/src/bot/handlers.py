@@ -98,7 +98,14 @@ class MessageHandler:
             return
 
         if len(output) <= self.settings.max_output_length:
-            await thread.send(f"```\n{output}\n```")
+            # `suppress_embeds=True` stops Discord from auto-unfurling URLs,
+            # and `allowed_mentions` prevents Claude's output from accidentally
+            # pinging @everyone/@here or specific users/roles.
+            await thread.send(
+                output,
+                allowed_mentions=discord.AllowedMentions.none(),
+                suppress_embeds=True,
+            )
         else:
             # Upload as a text file
             file = discord.File(
