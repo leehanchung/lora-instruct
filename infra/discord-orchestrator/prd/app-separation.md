@@ -422,7 +422,7 @@ Once separated, the CI/CD refactor becomes trivially obvious:
   `make sync-dev modal-deploy` with `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`
   as env vars. Runs on GitHub Actions runner, never touches the VPS.
 - **`deploy-bot`** job: SSH into the VPS, `cd
-  /root/lora-instruct/infra/discord-orchestrator/apps/delulu_discord`,
+  /root/SMILE-factory/infra/discord-orchestrator/apps/delulu_discord`,
   `make deploy`. VPS only needs Docker.
 
 Path filters become clean and unambiguous:

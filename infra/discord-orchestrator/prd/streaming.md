@@ -86,7 +86,7 @@ event types, which is what the dispatcher yields across the
 bot ↔ Modal boundary:
 
 ```python
-# src/modal_dispatch/events.py (new)
+# apps/delulu_sandbox_modal/src/delulu_sandbox_modal/events.py (new)
 from typing import Literal, TypedDict
 
 class ToolUseEvent(TypedDict):
@@ -125,7 +125,7 @@ Claude Code's schema drifts we have one place to fix.
 
 ## Architecture changes
 
-### `src/modal_dispatch/app.py`
+### `apps/delulu_sandbox_modal/src/delulu_sandbox_modal/app.py`
 
 `run_claude_code` becomes a Modal **generator function**:
 
@@ -141,7 +141,7 @@ Claude Code's schema drifts we have one place to fix.
 - Credential persistence (the volume commit after the run) still
   happens exactly once at the end, same as today.
 
-### `src/modal_dispatch/sandbox.py`
+### `apps/delulu_discord/src/delulu_discord/dispatcher.py`
 
 `SandboxDispatcher.run_task` becomes an **async generator**. Uses
 Modal's `.remote_gen.aio(...)` instead of `.remote(...)`:
@@ -157,7 +157,7 @@ async def run_task(self, ...) -> AsyncIterator[Event]:
 The synchronous-call-in-executor dance we have today goes away —
 `remote_gen.aio` is async-native.
 
-### `src/bot/handlers.py`
+### `apps/delulu_discord/src/delulu_discord/handlers.py`
 
 `_dispatch_and_respond` becomes a driver for the event stream:
 
@@ -176,7 +176,7 @@ deterministic — given a list of events, produce a markdown string
 fitting in Discord's 2000-char limit. If the transcript would exceed
 the limit, truncate older tool calls (keep the most recent N).
 
-### New file: `src/bot/streaming.py`
+### New file: `apps/delulu_discord/src/delulu_discord/streaming.py`
 
 Houses the renderer, the debouncer / flush loop, and the event-to-
 markdown formatters. Keeping this out of `handlers.py` so the handler
@@ -189,7 +189,13 @@ revertable:
 
 ### Commit 1 — emit events (no UX change yet)
 
-- Add `src/modal_dispatch/events.py` with the typed event dicts.
+- Add `apps/delulu_sandbox_modal/src/delulu_sandbox_modal/events.py`
+  with the typed event dicts. **Note:** since the app-separation
+  refactor landed, `delulu_discord` cannot import from
+  `delulu_sandbox_modal`. For v1 the bot will consume events as
+  untyped dicts; promoting `events.py` to a shared library is the
+  revisit point app-separation explicitly parked for streaming to
+  decide.
 - Rewrite `run_claude_code` as a generator that parses stream-json and
   yields events.
 - Temporarily keep `SandboxDispatcher` synchronous: have it collect
@@ -210,7 +216,8 @@ revertable:
 
 ### Commit 3 — live status message
 
-- Add `src/bot/streaming.py` with `_render` and the flush loop.
+- Add `apps/delulu_discord/src/delulu_discord/streaming.py` with
+  `_render` and the flush loop.
 - Replace the stub consumer in `_dispatch_and_respond` with the real
   live-rendering driver.
 - Rate-limit the flush loop to 1 edit/sec.

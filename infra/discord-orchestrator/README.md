@@ -441,19 +441,31 @@ so the next push doesn't redeploy the broken version.
 
 ```
 discord-orchestrator/
-├── src/
-│   ├── bot/
-│   │   ├── main.py              # Bot entrypoint + @mention gating
-│   │   ├── handlers.py          # Message routing + result posting
-│   │   └── session_manager.py   # Thread ↔ session mapping with TTL
-│   ├── modal_dispatch/
-│   │   ├── app.py               # Modal App, image, volume, secret, sandbox function
-│   │   └── sandbox.py           # SandboxDispatcher (bot-side wrapper around Function.from_name)
-│   └── config/
-│       └── settings.py          # Pydantic Settings from env vars
-├── ARCHITECTURE.md              # Full design doc
-├── Makefile                     # make deploy / modal-deploy / logs / ...
-├── Dockerfile                   # For hosting the bot process
-├── pyproject.toml               # uv project config
-└── .env.example                 # Environment variable template
+├── apps/
+│   ├── delulu_discord/                     # VPS-hosted Discord bot
+│   │   ├── pyproject.toml                  # discord.py, modal (client), pydantic, structlog
+│   │   ├── uv.lock
+│   │   ├── .python-version
+│   │   ├── Dockerfile                      # bot image only — no sandbox deps
+│   │   ├── Makefile                        # VPS targets: sync / check / image / deploy / logs
+│   │   └── src/delulu_discord/
+│   │       ├── main.py                     # Bot entrypoint + @mention gating
+│   │       ├── handlers.py                 # Message routing + attachment download + result posting
+│   │       ├── session_manager.py          # Thread ↔ session mapping with TTL
+│   │       ├── dispatcher.py               # SandboxDispatcher (client-side Function.from_name wrapper)
+│   │       └── settings.py                 # Pydantic Settings from env vars
+│   │
+│   └── delulu_sandbox_modal/               # Modal-deployed sandbox function
+│       ├── pyproject.toml                  # modal, structlog — nothing else
+│       ├── uv.lock
+│       ├── .python-version
+│       ├── Makefile                        # Modal targets: sync / check / modal-deploy
+│       └── src/delulu_sandbox_modal/
+│           └── app.py                      # Modal App, image, volume, secret, run_claude_code
+│
+├── Makefile                                # top-level dispatcher (check / deploy-bot / deploy-modal / deploy-all)
+├── ARCHITECTURE.md                         # Full design doc
+├── README.md
+├── prd/                                    # planning docs
+└── .env.example                            # bot environment template
 ```

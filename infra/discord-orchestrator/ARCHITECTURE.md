@@ -27,40 +27,36 @@ A lightweight system that lets users trigger Claude Code tasks from Discord. Mod
 
 ## Components
 
-### 1. Discord Bot (`src/bot/`)
+### 1. Discord Bot (`apps/delulu_discord/`)
 
 **Always-on process** hosted on a cheap VM (Fly.io, Railway, or local machine). Responsibilities:
 
 - Listen for messages via discord.py gateway connection
 - **Thread-session mapping**: new channel message → create Discord thread + allocate session ID. Reply in thread → reuse session ID.
-- Dispatch work to Modal via `modal_dispatch`
+- Dispatch work to Modal via the client-side `dispatcher` wrapper
 - Post results back into the originating thread
 - Truncate long outputs to fit Discord's 2000-char limit (with file upload fallback)
 
-Key files:
+Key files (under `src/delulu_discord/`):
 - `main.py` — bot entrypoint, client setup, event registration
-- `handlers.py` — message/command event handlers
+- `handlers.py` — message/command event handlers, attachment download
 - `session_manager.py` — thread↔session mapping, TTL expiry
+- `dispatcher.py` — `SandboxDispatcher`, a client-side wrapper around `modal.Function.from_name(...).remote()`
+- `settings.py` — Pydantic Settings model, loads from env vars / .env
 
-### 2. Modal Sandbox Dispatcher (`src/modal_dispatch/`)
+### 2. Modal Sandbox Function (`apps/delulu_sandbox_modal/`)
 
 **Ephemeral containers** spun up per task. Each sandbox:
 
 - Mounts the persistent volume at `/vol`
 - Has Claude Code installed (via image build)
-- Receives: session_id, workspace_path, prompt, whether to resume
+- Receives: session_id, workspace_path, prompt, resume flag, and any attachments the user uploaded
 - Runs `claude` CLI with appropriate flags
 - Returns stdout/stderr as the result
 - Dies after completion (~4GB RAM, configurable)
 
-Key files:
-- `app.py` — Modal app definition, image build spec, volume config
-- `sandbox.py` — the function that runs inside each sandbox
-- `workspace.py` — workspace provisioning (git clone, directory setup)
-
-### 3. Config (`src/config/`)
-
-- `settings.py` — Pydantic Settings model, loads from env vars / .env
+Key file (under `src/delulu_sandbox_modal/`):
+- `app.py` — Modal App definition, image build spec, volume config, `run_claude_code` function body
 
 ## Design Decisions
 
