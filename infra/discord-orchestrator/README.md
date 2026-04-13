@@ -9,12 +9,76 @@ Discord bot that dispatches Claude Code tasks to ephemeral Modal Sandboxes.
 3. Bot dispatches the task to a Modal Sandbox (ephemeral container with Claude Code installed)
 4. Sandbox runs the task, returns output, dies
 5. Bot posts the result in the thread
-6. Replies in the thread resume the same session (within 1hr TTL)
+6. Replies in the thread resume the same session (within 1hr TTL) via `claude --continue`
 
 The bot process itself is tiny (~50MB RAM) and just dispatches jobs — all
 heavy lifting (and all Claude Code execution) happens inside Modal sandboxes.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design.
+
+### Architecture
+
+```mermaid
+flowchart LR
+    U([User])
+
+    subgraph Discord
+      Ch["#claude-* channel"]
+      Th["thread"]
+    end
+
+    subgraph Droplet["DO Droplet"]
+      Bot["disco<br/>(bot container)"]
+      SM["session_manager<br/>thread_id → session"]
+      Bot --- SM
+    end
+
+    subgraph Modal["Modal"]
+      App["discord-orchestrator App"]
+      Fn["run_claude_code<br/>(ephemeral sandbox)"]
+      Vol[("claude-workspaces<br/>Volume")]
+      Sec["claude-oauth<br/>Secret"]
+      App --- Fn
+    end
+
+    subgraph Anthropic["Anthropic"]
+      API["Claude API<br/>(Pro/Max OAuth)"]
+    end
+
+    U -->|message| Ch
+    Ch -->|gateway event| Bot
+    Bot -->|create| Th
+    Bot -->|Function.from_name.remote| Fn
+    Sec -.->|seeds .credentials.json| Vol
+    Vol <-.->|mount /vol| Fn
+    Fn -->|claude -p --continue| API
+    Fn -->|stdout| Bot
+    Bot -->|reply| Th
+    Th --> U
+```
+
+**Runtime request flow** — a message in a `#claude-*` channel triggers the
+bot to open a thread, look up or create a session, and call the deployed
+Modal function via `Function.from_name(...).remote(...)`. Modal spins up an
+ephemeral container from a pre-baked image (Node + Claude Code), mounts the
+persistent volume where `.credentials.json` lives, runs `claude --print`,
+captures stdout, persists any rotated OAuth tokens back to the volume, and
+exits. The bot posts the output in the thread. Follow-up replies in the
+same thread resume via `--continue`, which Claude Code resolves against the
+per-thread workspace directory on the volume.
+
+**Key invariants worth knowing:**
+
+- **The bot never runs Claude Code itself.** It only holds a Discord
+  WebSocket connection and a hydrated Modal function reference. Any VPS
+  with Docker can host it.
+- **Sandboxes are ephemeral but the volume is not.** Workspaces
+  (`/vol/workspaces/<session-id>`) and OAuth credentials
+  (`/vol/claude-auth/.credentials.json`) survive across invocations, which
+  is how both session resume and refresh-token rotation work.
+- **Auth is one-way from laptop → Modal Secret → Volume.** The secret only
+  seeds the volume on first run; after that, the volume's copy is the
+  source of truth. The droplet never stores Claude credentials at rest.
 
 ## Prerequisites
 
