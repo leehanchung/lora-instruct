@@ -5,7 +5,7 @@ description = "Discord bot that dispatches Claude Code tasks to Modal Sandboxes"
 requires-python = ">=3.11"
 dependencies = [
     "discord.py>=2.4,<3",
-    "modal>=0.73,<1",
+    "modal>=1.0",
     "pydantic>=2.0,<3",
     "pydantic-settings>=2.0,<3",
     "structlog>=24.0",
