@@ -30,6 +30,9 @@ volume = modal.Volume.from_name("claude-workspaces", create_if_missing=True)
 sandbox_image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("git", "curl")
+    # app.py is imported inside the sandbox to call run_claude_code, so any
+    # third-party module it imports at module level must be present here too.
+    .pip_install("structlog>=24.0")
     .run_commands(
         # Install Node.js (required by Claude Code)
         "curl -fsSL https://deb.nodesource.com/setup_20.x | bash -",
