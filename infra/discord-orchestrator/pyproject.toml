@@ -1,0 +1,33 @@
+[project]
+name = "discord-orchestrator"
+version = "0.1.0"
+description = "Discord bot that dispatches Claude Code tasks to Modal Sandboxes"
+requires-python = ">=3.11"
+dependencies = [
+    "discord.py>=2.4,<3",
+    "modal>=0.73,<1",
+    "pydantic>=2.0,<3",
+    "pydantic-settings>=2.0,<3",
+    "structlog>=24.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.8",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[project.scripts]
+bot = "src.bot.main:main"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

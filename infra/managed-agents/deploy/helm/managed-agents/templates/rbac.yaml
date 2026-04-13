@@ -1,0 +1,131 @@
+{{- if .Values.rbac.enabled }}
+# ServiceAccount for the API server
+# Required for RBAC authorization to create and manage session Jobs
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "managed-agents.serviceAccountName" . }}
+  labels:
+    {{- include "managed-agents.labels" . | nindent 4 }}
+  namespace: {{ .Release.Namespace }}
+  {{- if .Values.rbac.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml .Values.rbac.serviceAccount.annotations | nindent 4 }}
+  {{- end }}
+
+---
+
+# ClusterRole for managing Jobs and Pods in session namespace
+# Allows the API to:
+# - Create/delete session Jobs
+# - Monitor Job status and logs
+# - Create NetworkPolicies for isolation
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "managed-agents.fullname" . }}-api
+  labels:
+    {{- include "managed-agents.labels" . | nindent 4 }}
+rules:
+  # Job management in session namespace
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"]
+
+  # Pod inspection (logs, status)
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/status"]
+    verbs: ["get", "list", "watch"]
+
+  # Events for monitoring Job execution
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+
+  # NetworkPolicy management for session isolation
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+
+  # ConfigMap access for runtime configuration
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+
+  # Secret access (API keys, credentials) - read-only
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+
+---
+
+# ClusterRoleBinding: Grant API ServiceAccount the role
+# This allows the API to manage Jobs in the session namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "managed-agents.fullname" . }}-api
+  labels:
+    {{- include "managed-agents.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "managed-agents.fullname" . }}-api
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "managed-agents.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+
+---
+
+# Role for session Jobs
+# Allows session containers limited permissions (read-only access to ConfigMaps/Secrets)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "managed-agents.fullname" . }}-session
+  labels:
+    {{- include "managed-agents.labels" . | nindent 4 }}
+  namespace: {{ include "managed-agents.session.namespace" . }}
+rules:
+  # Read-only access to ConfigMaps (for retrieving shared configuration)
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list"]
+
+  # Read-only access to Secrets (for retrieving credentials if needed)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+
+---
+
+# ServiceAccount for session Jobs
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "managed-agents.fullname" . }}-session
+  labels:
+    {{- include "managed-agents.labels" . | nindent 4 }}
+  namespace: {{ include "managed-agents.session.namespace" . }}
+
+---
+
+# RoleBinding: Grant session Jobs access to resources in their namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "managed-agents.fullname" . }}-session
+  labels:
+    {{- include "managed-agents.labels" . | nindent 4 }}
+  namespace: {{ include "managed-agents.session.namespace" . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "managed-agents.fullname" . }}-session
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "managed-agents.fullname" . }}-session
+    namespace: {{ include "managed-agents.session.namespace" . }}
+
+{{- end }}

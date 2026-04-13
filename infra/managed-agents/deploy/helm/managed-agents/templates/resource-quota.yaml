@@ -1,0 +1,29 @@
+{{- if .Values.sessions.resourceQuota.enabled }}
+# ResourceQuota for session namespace
+# Prevents runaway sessions from consuming all cluster resources
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ include "managed-agents.fullname" . }}-session-quota
+  labels:
+    {{- include "managed-agents.labels" . | nindent 4 }}
+  namespace: {{ include "managed-agents.session.namespace" . }}
+spec:
+  hard:
+    # Pod count limit
+    pods: {{ .Values.sessions.resourceQuota.limits.pods | quote }}
+    # CPU limits
+    requests.cpu: {{ .Values.sessions.resourceQuota.limits.requests.cpu | quote }}
+    limits.cpu: {{ .Values.sessions.resourceQuota.limits.limits.cpu | quote }}
+    # Memory limits
+    requests.memory: {{ .Values.sessions.resourceQuota.limits.requests.memory | quote }}
+    limits.memory: {{ .Values.sessions.resourceQuota.limits.limits.memory | quote }}
+  scopeSelector:
+    matchExpressions:
+      # Apply quota only to pods in "matching" scope
+      - operator: In
+        scopeName: PriorityClass
+        values:
+          - ""  # Default priority class
+
+{{- end }}

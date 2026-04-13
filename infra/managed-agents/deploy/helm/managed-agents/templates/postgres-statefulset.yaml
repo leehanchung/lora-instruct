@@ -1,0 +1,139 @@
+{{- if .Values.postgresql.enabled }}
+# PostgreSQL StatefulSet
+# Provides persistent database storage with:
+# - PersistentVolumeClaim for data persistence
+# - Stable network identity for replicas
+# - Regular backup considerations (not included; add external backup sidecar)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "managed-agents.fullname" . }}-postgresql
+  labels:
+    {{- include "managed-agents.labels" . | nindent 4 }}
+    component: postgresql
+  namespace: {{ .Release.Namespace }}
+spec:
+  serviceName: {{ include "managed-agents.fullname" . }}-postgresql
+  replicas: 1  # Single instance; for HA, consider using a PgSQL operator
+
+  selector:
+    matchLabels:
+      {{- include "managed-agents.selectorLabels" . | nindent 6 }}
+      component: postgresql
+
+  template:
+    metadata:
+      labels:
+        {{- include "managed-agents.selectorLabels" . | nindent 8 }}
+        component: postgresql
+    spec:
+      # Pod-level security context
+      securityContext:
+        fsGroup: 999
+        fsGroupChangePolicy: OnRootMismatch
+
+      containers:
+        - name: postgres
+          image: postgres:15-alpine
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+
+          # Container-level security context
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+
+          # Environment configuration for PostgreSQL
+          env:
+            - name: POSTGRES_DB
+              value: "{{ .Values.postgresql.auth.database }}"
+            - name: POSTGRES_USER
+              value: "{{ .Values.postgresql.auth.username }}"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "managed-agents.fullname" . }}-postgres-secret
+                  key: password
+            # PostgreSQL configuration
+            - name: POSTGRES_INITDB_ARGS
+              value: "-c shared_buffers=256MB -c max_connections=200"
+
+          # Startup probe: wait for PostgreSQL to be ready for connections
+          startupProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - pg_isready -U {{ .Values.postgresql.auth.username }}
+            initialDelaySeconds: 0
+            periodSeconds: 10
+            timeoutSeconds: 1
+            failureThreshold: 30
+
+          # Liveness probe: restart if PostgreSQL becomes unresponsive
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - pg_isready -U {{ .Values.postgresql.auth.username }}
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          # Readiness probe: remove from service if not ready for connections
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - pg_isready -U {{ .Values.postgresql.auth.username }}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 1
+            failureThreshold: 2
+
+          # Resource requests and limits
+          resources:
+            {{- toYaml .Values.postgresql.resources | nindent 12 }}
+
+          # Volume mounts
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+              subPath: postgres
+            - name: postgres-config
+              mountPath: /etc/postgresql
+
+      # Volumes
+      volumes:
+        - name: postgres-config
+          emptyDir: {}
+
+      # Graceful shutdown period
+      terminationGracePeriodSeconds: 30
+
+  # PersistentVolumeClaim template for data persistence
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        {{- if .Values.postgresql.persistence.storageClass }}
+        storageClassName: {{ .Values.postgresql.persistence.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgresql.persistence.size }}
+
+{{- end }}

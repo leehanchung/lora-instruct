@@ -1,0 +1,88 @@
+{{- if .Values.sessions.networkPolicy.enabled }}
+# NetworkPolicy for session namespace
+# Provides network isolation for session Jobs:
+# - Denies all ingress by default (only allows DNS for external API calls)
+# - Allows egress to external services and APIs
+# This prevents session containers from communicating with each other
+# while still allowing outbound connectivity to LLM APIs, tools, etc.
+
+---
+
+# Deny all ingress traffic in session namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "managed-agents.fullname" . }}-session-deny-ingress
+  labels:
+    {{- include "managed-agents.labels" . | nindent 4 }}
+  namespace: {{ include "managed-agents.session.namespace" . }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress: []  # Empty ingress rules = deny all
+
+---
+
+# Allow DNS for session pods (required for external API calls)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "managed-agents.fullname" . }}-session-allow-dns
+  labels:
+    {{- include "managed-agents.labels" . | nindent 4 }}
+  namespace: {{ include "managed-agents.session.namespace" . }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # Allow DNS to kube-dns for name resolution
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Allow egress to external networks (CIDR blocks)
+    {{- range .Values.sessions.networkPolicy.egressCIDRs }}
+    - to:
+        - ipBlock:
+            cidr: {{ . }}
+      ports:
+        - protocol: TCP
+        - protocol: UDP
+    {{- end }}
+
+---
+
+# Allow traffic from API server to session namespace (for Job creation and monitoring)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "managed-agents.fullname" . }}-api-to-sessions
+  labels:
+    {{- include "managed-agents.labels" . | nindent 4 }}
+  namespace: {{ include "managed-agents.session.namespace" . }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    # Allow API server to query job status, logs, etc.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              {{- include "managed-agents.selectorLabels" . | nindent 14 }}
+              component: api
+      ports:
+        - protocol: TCP
+          port: 15000  # kubelet port for logs/exec
+
+{{- end }}

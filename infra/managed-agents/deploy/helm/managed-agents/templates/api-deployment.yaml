@@ -1,0 +1,227 @@
+{{- if .Values.api }}
+# API Server Deployment
+# Manages the managed-agents API server with:
+# - Horizontal scaling (replicas)
+# - Health checks (liveness/readiness)
+# - Environment configuration via ConfigMap and Secrets
+# - RBAC for creating/managing session Jobs
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "managed-agents.fullname" . }}-api
+  labels:
+    {{- include "managed-agents.labels" . | nindent 4 }}
+    component: api
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: {{ .Values.api.replicas }}
+
+  # Rolling update strategy for zero-downtime deployments
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  selector:
+    matchLabels:
+      {{- include "managed-agents.selectorLabels" . | nindent 6 }}
+      component: api
+
+  # Pod disruption budget: maintain at least 1 running replica during voluntary disruptions
+  {{- if .Values.api.podDisruptionBudget.enabled }}
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.api.port | quote }}
+        prometheus.io/path: "/metrics"
+      labels:
+        {{- include "managed-agents.selectorLabels" . | nindent 8 }}
+        component: api
+    spec:
+      # Use the service account with RBAC for job management
+      serviceAccountName: {{ include "managed-agents.serviceAccountName" . }}
+      automountServiceAccountToken: true
+
+      # Pod-level security context
+      securityContext:
+        fsGroup: 1000
+        runAsNonRoot: true
+
+      # Affinity: prefer spreading replicas across nodes
+      {{- if .Values.affinity.podAntiAffinity.enabled }}
+      affinity:
+        podAntiAffinity:
+          {{- if eq .Values.affinity.podAntiAffinity.type "hard" }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+          {{- else }}
+          preferredDuringSchedulingIgnoredDuringExecution:
+          {{- end }}
+            - podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                        - {{ include "managed-agents.name" . }}
+                    - key: component
+                      operator: In
+                      values:
+                        - api
+                topologyKey: kubernetes.io/hostname
+              {{- if eq .Values.affinity.podAntiAffinity.type "soft" }}
+              weight: 100
+              {{- end }}
+      {{- end }}
+
+      {{- if .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      {{- end }}
+
+      {{- if .Values.tolerations }}
+      tolerations:
+        {{- toYaml .Values.tolerations | nindent 8 }}
+      {{- end }}
+
+      # Init container to wait for PostgreSQL readiness
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.35
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z {{ include "managed-agents.postgres.host" . }} 5432; do
+                echo "Waiting for PostgreSQL..."
+                sleep 2
+              done
+              echo "PostgreSQL is ready"
+
+        - name: wait-for-redis
+          image: busybox:1.35
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z {{ include "managed-agents.redis.host" . }} 6379; do
+                echo "Waiting for Redis..."
+                sleep 2
+              done
+              echo "Redis is ready"
+
+      containers:
+        - name: api
+          image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
+          imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+
+          ports:
+            - name: http
+              containerPort: {{ .Values.api.port }}
+              protocol: TCP
+
+          # Container-level security context
+          securityContext:
+            {{- toYaml .Values.api.securityContext | nindent 12 }}
+
+          # Environment variables from ConfigMap and Secrets
+          envFrom:
+            - configMapRef:
+                name: {{ include "managed-agents.fullname" . }}-api-config
+          env:
+            # Database URL from Secret or ConfigMap
+            - name: DATABASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "managed-agents.fullname" . }}-api-config
+                  key: DATABASE_URL
+            # Redis URL from Secret or ConfigMap
+            - name: REDIS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "managed-agents.fullname" . }}-api-config
+                  key: REDIS_URL
+            # LLM configuration
+            - name: LLM_DEFAULT_BACKEND
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "managed-agents.fullname" . }}-api-config
+                  key: LLM_DEFAULT_BACKEND
+            # Anthropic API key (if using Anthropic backend)
+            {{- if eq .Values.llm.defaultBackend "anthropic" }}
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.llm.anthropic.apiKeySecret }}
+                  key: {{ .Values.llm.anthropic.apiKeySecretKey }}
+            {{- end }}
+            # Session namespace for Job creation
+            - name: SESSION_NAMESPACE
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "managed-agents.fullname" . }}-api-config
+                  key: SESSION_NAMESPACE
+            # Session configuration
+            - name: SESSION_MAX_CONCURRENT
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "managed-agents.fullname" . }}-api-config
+                  key: SESSION_MAX_CONCURRENT
+            - name: SESSION_TTL_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "managed-agents.fullname" . }}-api-config
+                  key: SESSION_TTL_SECONDS
+            # Runtime image for session jobs
+            - name: RUNTIME_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "managed-agents.fullname" . }}-api-config
+                  key: RUNTIME_IMAGE
+            # Log level
+            - name: LOG_LEVEL
+              value: "{{ .Values.api.env.LOG_LEVEL }}"
+
+          # Liveness probe: restart container if health endpoint fails
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          # Readiness probe: remove from load balancer if not ready
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+
+          # Resource requests and limits
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+
+          # Volume mounts for read-only filesystem
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /app/.cache
+
+      # Volumes for read-only root filesystem
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}
+
+      # Graceful shutdown period
+      terminationGracePeriodSeconds: 30
+
+{{- end }}

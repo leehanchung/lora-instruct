@@ -1,0 +1,111 @@
+# Development values for managed-agents Helm chart
+# Optimized for local development and testing
+# Use with: helm install managed-agents ./helm/managed-agents -f values-development.yaml
+
+global:
+  domain: agents.local
+  environment: development
+
+# API Server - Single replica for development
+api:
+  replicas: 1
+  image:
+    repository: managed-agents-api
+    tag: latest
+    pullPolicy: Always  # Always pull for development
+  port: 8000
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  env:
+    LOG_LEVEL: debug
+  autoscaling:
+    enabled: false
+  podDisruptionBudget:
+    enabled: false
+
+# Runtime configuration - Minimal for development
+runtime:
+  image:
+    repository: managed-agents-runtime
+    tag: latest
+  defaultResources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+  sessionTimeout: 3600
+
+# PostgreSQL - Embedded for development
+postgresql:
+  enabled: true
+  auth:
+    database: managed_agents
+    username: postgres
+    password: postgres
+  persistence:
+    enabled: true
+    size: 5Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# Redis - Embedded for development
+redis:
+  enabled: true
+  persistence:
+    enabled: true
+    size: 1Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+# Ingress - Disabled for local development
+ingress:
+  enabled: false
+
+# Session configuration - Relaxed for development
+sessions:
+  namespace: managed-agents-sessions
+  ttlAfterFinished: 3600
+  maxConcurrent: 10
+  networkPolicy:
+    enabled: false  # Disable for easier debugging
+  resourceQuota:
+    enabled: false
+
+# Monitoring - Disabled for development
+monitoring:
+  prometheus:
+    enabled: false
+  serviceMonitor:
+    enabled: false
+  logging:
+    level: debug
+    format: json
+
+# RBAC
+rbac:
+  enabled: true
+
+# Pod scheduling - No constraints for development
+affinity:
+  podAntiAffinity:
+    enabled: false
+
+nodeSelector: {}
+tolerations: []

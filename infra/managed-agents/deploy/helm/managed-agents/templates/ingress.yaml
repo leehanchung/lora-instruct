@@ -1,0 +1,45 @@
+{{- if .Values.ingress.enabled }}
+# Ingress for external access to managed-agents API
+# Provides HTTP(S) routing to the API service
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "managed-agents.fullname" . }}
+  labels:
+    {{- include "managed-agents.labels" . | nindent 4 }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    # Standard annotations
+    kubernetes.io/ingress.class: {{ .Values.ingress.className }}
+    {{- if .Values.ingress.tls.enabled }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.issuer }}
+    {{- end }}
+    # Add custom annotations from values
+    {{- range $key, $value := .Values.ingress.annotations }}
+    {{ $key }}: {{ $value | quote }}
+    {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "managed-agents.fullname" . }}-api
+                port:
+                  number: {{ .Values.api.port }}
+
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host }}
+      secretName: {{ include "managed-agents.fullname" . }}-tls
+  {{- end }}
+
+{{- end }}

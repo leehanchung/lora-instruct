@@ -1,0 +1,9 @@
+{
+  "llm": {
+    "provider": "anthropic",
+    "model": "claude-3-5-sonnet-20241022",
+    "api_key": "${ANTHROPIC_API_KEY}"
+  },
+  "system_prompt": "You are a helpful autonomous agent. You have access to tools for:\n- Executing shell commands (bash)\n- Reading and writing files\n- Searching and analyzing content\n- Web access\n\nUse these tools to accomplish the user's request. Be concise and efficient.",
+  "max_turns": 50
+}

@@ -1,0 +1,69 @@
+{{- if .Values.api }}
+# ConfigMap for API Server Configuration
+# Contains non-sensitive configuration like database URLs, session settings, etc.
+# Sensitive data (API keys, passwords) should be stored in Secrets instead
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "managed-agents.fullname" . }}-api-config
+  labels:
+    {{- include "managed-agents.labels" . | nindent 4 }}
+    component: api
+  namespace: {{ .Release.Namespace }}
+data:
+  # Database connection URL
+  DATABASE_URL: "{{ include "managed-agents.postgres.url" . }}"
+
+  # Redis connection URL
+  REDIS_URL: "{{ include "managed-agents.redis.url" . }}"
+
+  # LLM Backend configuration
+  LLM_DEFAULT_BACKEND: "{{ .Values.llm.defaultBackend }}"
+  {{- if eq .Values.llm.defaultBackend "anthropic" }}
+  LLM_ANTHROPIC_MODEL: "{{ .Values.llm.anthropic.model }}"
+  {{- else if eq .Values.llm.defaultBackend "vllm" }}
+  LLM_VLLM_ENDPOINT: "{{ .Values.llm.vllm.endpoint }}"
+  LLM_VLLM_MODEL: "{{ .Values.llm.vllm.model }}"
+  {{- end }}
+
+  # Orchestrator backend: "k8s" or "hybrid"
+  ORCHESTRATOR_BACKEND: "{{ .Values.orchestrator.backend }}"
+
+  # Worker discovery mode for hybrid backend
+  ORCHESTRATOR_DISCOVERY_MODE: "{{ .Values.orchestrator.discoveryMode }}"
+
+  {{- if .Values.orchestrator.workerAddresses }}
+  ORCHESTRATOR_WORKER_ADDRESSES: "{{ join "," .Values.orchestrator.workerAddresses }}"
+  {{- end }}
+
+  # Session namespace where Jobs are created (K8s backend)
+  SESSION_NAMESPACE: "{{ include "managed-agents.session.namespace" . }}"
+
+  # Session configuration
+  SESSION_MAX_CONCURRENT: "{{ .Values.sessions.maxConcurrent }}"
+  SESSION_TTL_SECONDS: "{{ .Values.sessions.ttlAfterFinished }}"
+
+  # Runtime image for session Jobs
+  # This is the image that will be used for agent execution containers
+  RUNTIME_IMAGE: "{{ .Values.runtime.image.repository }}:{{ .Values.runtime.image.tag }}"
+
+  # Runtime resource configuration (passed to Job manifests)
+  RUNTIME_CPU_REQUEST: "{{ .Values.runtime.defaultResources.requests.cpu }}"
+  RUNTIME_MEMORY_REQUEST: "{{ .Values.runtime.defaultResources.requests.memory }}"
+  RUNTIME_CPU_LIMIT: "{{ .Values.runtime.defaultResources.limits.cpu }}"
+  RUNTIME_MEMORY_LIMIT: "{{ .Values.runtime.defaultResources.limits.memory }}"
+
+  # Logging configuration
+  LOG_LEVEL: "{{ .Values.api.env.LOG_LEVEL }}"
+
+  # API server port (for reference)
+  API_PORT: "{{ .Values.api.port }}"
+
+  # Environment
+  ENVIRONMENT: "{{ .Values.global.environment }}"
+
+  # Monitoring and observability
+  METRICS_ENABLED: "{{ .Values.monitoring.prometheus.enabled }}"
+  LOG_FORMAT: "{{ .Values.monitoring.logging.format }}"
+
+{{- end }}

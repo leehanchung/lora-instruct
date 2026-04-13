@@ -1,0 +1,379 @@
+# Default values for managed-agents Helm chart
+# This is a YAML-formatted file declaring variables to be passed into templates
+
+# Global configuration
+global:
+  # Domain for the cluster (used in ingress)
+  domain: example.com
+  # Environment: development, staging, production
+  environment: development
+
+# ============================================================================
+# API Server Configuration
+# ============================================================================
+api:
+  # Number of API server replicas
+  replicas: 2
+
+  # Container image configuration
+  image:
+    repository: managed-agents-api
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  # Port exposed by the API server
+  port: 8000
+
+  # Resource requests and limits
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+  # Environment variables
+  env:
+    LOG_LEVEL: info
+    # METRICS_ENABLED: false
+    # TRACING_ENABLED: false
+
+  # Security context for API containers
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
+  # Pod disruption budget (maintain availability during updates)
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+  # Autoscaling configuration
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: 80
+
+# ============================================================================
+# Agent Runtime Configuration
+# ============================================================================
+# Configuration for the runtime environment used in session Jobs
+runtime:
+  # Base image for session runtime containers
+  image:
+    repository: managed-agents-runtime
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  # Default resource requests/limits for session jobs
+  defaultResources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+
+  # Security context for runtime containers
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+    readOnlyRootFilesystem: false
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
+  # Timeout for individual session jobs (seconds)
+  sessionTimeout: 3600
+
+  # Environment variables passed to all runtime containers
+  env:
+    PYTHONUNBUFFERED: "1"
+    NODE_ENV: production
+
+# ============================================================================
+# LLM Backend Configuration
+# ============================================================================
+llm:
+  # Default backend: "anthropic" or "vllm"
+  defaultBackend: anthropic
+
+  # Anthropic API configuration (for Claude models)
+  anthropic:
+    # Name of the Kubernetes secret containing API key
+    apiKeySecret: anthropic-api-key
+    # Key within the secret
+    apiKeySecretKey: api-key
+    # Default model to use
+    model: claude-3-5-sonnet-20241022
+
+  # vLLM backend configuration (for self-hosted open-source models)
+  vllm:
+    # Endpoint for vLLM inference server
+    endpoint: http://vllm.default.svc.cluster.local:8000/v1
+    # Model identifier
+    model: meta-llama/Llama-3.1-8B-Instruct
+    # Deploy vLLM as part of this chart
+    deploy: false
+    # GPU configuration for vLLM
+    gpu:
+      count: 1
+      type: nvidia.com/gpu
+
+# ============================================================================
+# PostgreSQL Configuration
+# ============================================================================
+postgresql:
+  # Enable PostgreSQL deployment (set to false to use external database)
+  enabled: true
+
+  # Authentication
+  auth:
+    database: managed_agents
+    username: postgres
+    # IMPORTANT: Change this password in production! Use a Kubernetes secret instead.
+    password: changeme
+
+  # Storage configuration
+  persistence:
+    enabled: true
+    size: 10Gi
+    # storageClass: ""  # Leave empty for default, or specify a custom class
+
+  # Resource limits
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+  # Primary pod configuration
+  primary:
+    persistence:
+      enabled: true
+      size: 10Gi
+
+# ============================================================================
+# Redis Configuration
+# ============================================================================
+redis:
+  # Enable Redis deployment (set to false to use external Redis)
+  enabled: true
+
+  # Storage configuration for Redis persistence
+  persistence:
+    enabled: true
+    size: 1Gi
+
+  # Resource limits
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  # Redis configuration
+  config:
+    # Max memory policy: allkeys-lru, volatile-lru, etc.
+    maxmemory-policy: "allkeys-lru"
+
+# ============================================================================
+# Ingress Configuration
+# ============================================================================
+ingress:
+  # Enable ingress for external access
+  enabled: false
+
+  # Ingress class (nginx, istio, etc.)
+  className: nginx
+
+  # Hostname for the ingress
+  host: agents.example.com
+
+  # Enable TLS/HTTPS
+  tls:
+    enabled: false
+    # Cert issuer: letsencrypt-prod, letsencrypt-staging, etc.
+    issuer: letsencrypt-prod
+
+  # Additional ingress annotations
+  annotations:
+    # nginx.ingress.kubernetes.io/rate-limit: "100"
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+
+# ============================================================================
+# Orchestrator Backend Configuration
+# ============================================================================
+orchestrator:
+  # Backend: "k8s" (Jobs per session) or "hybrid" (bubblewrap on worker nodes)
+  backend: k8s
+
+  # Node agent configuration (only used when backend=hybrid)
+  nodeAgent:
+    # Enable DaemonSet deployment of node agent
+    enabled: false
+
+    image:
+      repository: managed-agents-node-agent
+      tag: latest
+      pullPolicy: IfNotPresent
+
+    # Port for the node agent HTTP API
+    port: 9090
+
+    # Max sessions per worker node
+    maxSessions: 20
+
+    # Host paths for session data
+    workspacesRoot: /var/lib/managed-agents/workspaces
+    logsRoot: /var/lib/managed-agents/logs
+
+    # Resource requests/limits for the node agent itself (not sessions)
+    resources:
+      requests:
+        cpu: 250m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+    # Node selector to target specific worker nodes
+    nodeSelector: {}
+      # node-role: agent-worker
+
+    # Tolerations for worker nodes
+    tolerations: []
+
+  # Worker discovery mode for hybrid backend
+  # "k8s" = auto-discover via DaemonSet pods
+  # "static" = use workerAddresses list
+  discoveryMode: k8s
+
+  # Static worker addresses (only used when discoveryMode=static)
+  workerAddresses: []
+    # - http://worker1:9090
+    # - http://worker2:9090
+
+# ============================================================================
+# Session Management Configuration
+# ============================================================================
+sessions:
+  # Namespace where session Jobs are created (for K8s backend isolation)
+  namespace: managed-agents-sessions
+
+  # TTL for completed jobs (seconds, K8s backend only)
+  ttlAfterFinished: 3600
+
+  # Maximum concurrent session jobs
+  maxConcurrent: 50
+
+  # Network policy for session isolation
+  networkPolicy:
+    enabled: true
+    # Deny all ingress by default
+    denyAllIngress: true
+    # Allow DNS for external API calls
+    allowDNS: true
+    # Allowed egress destinations (CIDR blocks)
+    egressCIDRs:
+      - 0.0.0.0/0
+
+  # Resource quotas for the session namespace
+  resourceQuota:
+    enabled: true
+    limits:
+      pods: "100"
+      requests.cpu: "50"
+      requests.memory: 100Gi
+      limits.cpu: "100"
+      limits.memory: 200Gi
+
+# ============================================================================
+# Observability & Monitoring Configuration
+# ============================================================================
+monitoring:
+  # Prometheus metrics scraping
+  prometheus:
+    enabled: false
+    scrapeInterval: 30s
+
+  # ServiceMonitor for Prometheus Operator
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+
+  # Logging configuration
+  logging:
+    level: info
+    # outputs: stdout, json (for structured logging)
+    format: json
+
+# ============================================================================
+# Security & RBAC Configuration
+# ============================================================================
+rbac:
+  # Enable RBAC (always recommended)
+  enabled: true
+
+  # Service account for API server
+  serviceAccount:
+    create: true
+    name: managed-agents-api
+    annotations: {}
+
+# Pod security
+podSecurityPolicy:
+  enabled: false  # Deprecated in K8s 1.25+, use Pod Security Standards instead
+
+podSecurityStandards:
+  enforce: restricted
+  audit: restricted
+  warn: restricted
+
+# ============================================================================
+# Persistence Configuration
+# ============================================================================
+persistence:
+  # Storage class for all persistent volumes
+  storageClass: ""  # Leave empty for default, specify name for custom class
+
+  # Retention policy for data (delete or retain)
+  retentionPolicy: delete
+
+# ============================================================================
+# Affinity & Scheduling Configuration
+# ============================================================================
+affinity:
+  # Pod anti-affinity to spread replicas across nodes
+  podAntiAffinity:
+    enabled: true
+    # soft (preferred) or hard (required)
+    type: soft
+
+# Node selector for scheduling pods on specific nodes
+nodeSelector: {}
+  # kubernetes.io/arch: amd64
+  # node-role: compute
+
+# Tolerations for pod scheduling on tainted nodes
+tolerations: []
+  # - key: "gpu"
+  #   operator: "Equal"
+  #   value: "true"
+  #   effect: "NoSchedule"

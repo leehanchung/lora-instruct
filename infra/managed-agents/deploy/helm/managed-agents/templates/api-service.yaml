@@ -1,0 +1,29 @@
+{{- if .Values.api }}
+# ClusterIP Service for API Server
+# Provides internal DNS-based service discovery for the API
+# This allows other components and external users to reach the API via:
+# http://{{ include "managed-agents.fullname" . }}-api:{{ .Values.api.port }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "managed-agents.fullname" . }}-api
+  labels:
+    {{- include "managed-agents.labels" . | nindent 4 }}
+    component: api
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    description: "ClusterIP service for managed-agents API server"
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.api.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "managed-agents.selectorLabels" . | nindent 4 }}
+    component: api
+  # Session affinity to maintain connections to the same pod (optional)
+  sessionAffinity: None
+
+{{- end }}

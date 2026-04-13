@@ -1,0 +1,140 @@
+# Example Kubernetes Job manifest for agent runtime
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: agent-job-${SESSION_ID}
+  namespace: agents
+  labels:
+    app: agent-runtime
+    session: ${SESSION_ID}
+spec:
+  # Don't retry if pod fails - clean exit preferred
+  backoffLimit: 0
+  # Job timeout 1 hour
+  activeDeadlineSeconds: 3600
+
+  template:
+    metadata:
+      labels:
+        app: agent-runtime
+        session: ${SESSION_ID}
+    spec:
+      restartPolicy: Never
+
+      serviceAccountName: agent-runtime
+
+      # Run as non-root
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+      containers:
+      - name: agent
+        image: agent-runtime:latest
+        imagePullPolicy: IfNotPresent
+
+        # Environment from config
+        env:
+        - name: SESSION_ID
+          value: ${SESSION_ID}
+
+        - name: AGENT_CONFIG_JSON
+          valueFrom:
+            configMapKeyRef:
+              name: agent-config-${SESSION_ID}
+              key: config.json
+
+        - name: INITIAL_MESSAGE
+          valueFrom:
+            configMapKeyRef:
+              name: agent-config-${SESSION_ID}
+              key: initial_message
+
+        - name: REDIS_URL
+          value: redis://redis-master:6379
+
+        - name: LOGLEVEL
+          value: INFO
+
+        # Resource requests/limits
+        resources:
+          requests:
+            memory: 1Gi
+            cpu: 500m
+          limits:
+            memory: 2Gi
+            cpu: 2000m
+
+        # Security context for container
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+
+        # Volume mounts
+        volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+
+        # Liveness probe
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - 'ps aux | grep "python.*agent_loop" | grep -v grep'
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+      # Volumes
+      volumes:
+      - name: workspace
+        emptyDir: {}
+
+      # Pod DNS for Redis connectivity
+      dnsPolicy: ClusterFirst
+
+---
+# RBAC for agent runtime
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-runtime
+  namespace: agents
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent-runtime
+  namespace: agents
+rules:
+# Can read config maps with agent config
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get"]
+  resourceNames: ["agent-config-*"]
+# Can read secrets (for API keys if stored in secrets)
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agent-runtime
+  namespace: agents
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agent-runtime
+subjects:
+- kind: ServiceAccount
+  name: agent-runtime
+  namespace: agents

@@ -1,0 +1,12 @@
+{{- if not (lookup "v1" "Namespace" "" (include "managed-agents.session.namespace" .)) }}
+# Create the namespace for session jobs and isolation
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "managed-agents.session.namespace" . }}
+  labels:
+    {{- include "managed-agents.labels" . | nindent 4 }}
+    purpose: session-isolation
+  annotations:
+    description: "Namespace for isolating managed-agents session Jobs"
+{{- end }}

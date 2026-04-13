@@ -1,0 +1,114 @@
+{{- if .Values.redis.enabled }}
+# Redis Deployment
+# In-memory cache and job queue for:
+# - Session state caching
+# - Task queuing
+# - Rate limiting
+# - Lock management for concurrent operations
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "managed-agents.fullname" . }}-redis
+  labels:
+    {{- include "managed-agents.labels" . | nindent 4 }}
+    component: redis
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1  # Single instance; for HA, consider Sentinel or cluster
+
+  selector:
+    matchLabels:
+      {{- include "managed-agents.selectorLabels" . | nindent 6 }}
+      component: redis
+
+  template:
+    metadata:
+      labels:
+        {{- include "managed-agents.selectorLabels" . | nindent 8 }}
+        component: redis
+    spec:
+      # Pod-level security context
+      securityContext:
+        fsGroup: 999
+
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+
+          # Container-level security context
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+          # Redis command with configuration
+          command:
+            - redis-server
+            - "--maxmemory"
+            - "512mb"
+            - "--maxmemory-policy"
+            - "{{ .Values.redis.config.maxmemory-policy }}"
+            {{- if .Values.redis.persistence.enabled }}
+            - "--appendonly"
+            - "yes"
+            {{- end }}
+
+          # Liveness probe: restart if Redis is unresponsive
+          livenessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          # Readiness probe: remove from service if not responding
+          readinessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+
+          # Resource requests and limits
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
+
+          # Volume mounts
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+            - name: redis-tmp
+              mountPath: /tmp
+
+      # Volumes
+      volumes:
+        - name: redis-data
+          {{- if .Values.redis.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "managed-agents.fullname" . }}-redis
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: redis-tmp
+          emptyDir: {}
+
+      # Graceful shutdown period
+      terminationGracePeriodSeconds: 30
+
+{{- end }}

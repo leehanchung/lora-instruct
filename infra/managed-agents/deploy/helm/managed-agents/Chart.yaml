@@ -1,0 +1,17 @@
+apiVersion: v2
+name: managed-agents
+description: Self-hosted Claude Managed Agents clone — reference architecture
+type: application
+version: 0.1.0
+appVersion: 0.1.0
+keywords:
+  - agents
+  - kubernetes
+  - llm
+  - anthropic
+home: https://github.com/anthropic-ai/managed-agents
+sources:
+  - https://github.com/anthropic-ai/managed-agents
+maintainers:
+  - name: Anthropic
+    email: support@anthropic.com

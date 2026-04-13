@@ -1,0 +1,120 @@
+# Runtime image for managed-agents sessions.
+#
+# Two entrypoint modes:
+#   1. Claude Code + Discord (default): runs `claude` CLI with Discord plugin
+#   2. Custom agent loop (legacy): runs `python3 -m src.runtime.agent_loop`
+#
+# Includes: Claude Code CLI, Bun (Discord MCP server), Python, Node.js, Go
+
+FROM ubuntu:22.04 AS base
+
+LABEL org.opencontainers.image.title="Managed Agents Runtime"
+LABEL org.opencontainers.image.description="Claude Code + Discord runtime for managed-agents sessions"
+LABEL org.opencontainers.image.version="0.2.0"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    NODE_ENV=production
+
+# ---------------------------------------------------------------------------
+# System packages
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Essentials
+    curl wget git ca-certificates gnupg \
+    # Editors & utilities
+    vim nano less jq zip unzip \
+    # Build tools (for native npm/pip packages)
+    build-essential pkg-config \
+    # Python
+    python3.11 python3-pip python3-venv \
+    # Node.js 20.x (LTS)
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    # Go
+    && apt-get install -y golang-go \
+    # Networking
+    netcat dnsutils \
+    # Shell
+    bash zsh \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# Bun (required by Discord MCP server plugin)
+# ---------------------------------------------------------------------------
+RUN curl -fsSL https://bun.sh/install | bash
+ENV BUN_INSTALL="/root/.bun"
+ENV PATH="$BUN_INSTALL/bin:$PATH"
+
+# ---------------------------------------------------------------------------
+# Claude Code CLI
+# ---------------------------------------------------------------------------
+# Install via npm (official distribution channel)
+RUN npm install -g @anthropic-ai/claude-code
+
+# ---------------------------------------------------------------------------
+# Discord plugin pre-install
+# ---------------------------------------------------------------------------
+# Pre-install the Discord plugin so sessions don't need network for setup.
+# The plugin is an MCP server that runs alongside Claude Code.
+RUN mkdir -p /opt/claude-plugins && \
+    cd /opt/claude-plugins && \
+    git clone --depth 1 https://github.com/anthropics/claude-plugins-official.git && \
+    cd claude-plugins-official/external_plugins/discord && \
+    bun install --frozen-lockfile
+
+# ---------------------------------------------------------------------------
+# Python packages (common utilities for agent workspaces)
+# ---------------------------------------------------------------------------
+RUN python3 -m pip install --upgrade pip setuptools wheel && \
+    python3 -m pip install --no-cache-dir \
+    asyncio aiohttp httpx beautifulsoup4 \
+    numpy pandas requests pydantic pyyaml
+
+# ---------------------------------------------------------------------------
+# Node.js global packages
+# ---------------------------------------------------------------------------
+RUN npm install -g typescript ts-node
+
+# ---------------------------------------------------------------------------
+# Go workspace
+# ---------------------------------------------------------------------------
+ENV GOPATH=/home/agent/go \
+    GOROOT=/usr/lib/go \
+    PATH="/home/agent/go/bin:/usr/lib/go/bin:$PATH"
+
+# ---------------------------------------------------------------------------
+# Non-root user
+# ---------------------------------------------------------------------------
+RUN groupadd -r agent && useradd -r -g agent -m -d /home/agent agent
+
+# Move Bun to agent-accessible location
+RUN cp -r /root/.bun /home/agent/.bun && \
+    chown -R agent:agent /home/agent/.bun
+ENV BUN_INSTALL="/home/agent/.bun"
+
+# Create directories
+RUN mkdir -p /app /workspace /home/agent/.claude/channels/discord && \
+    chown -R agent:agent /app /workspace /home/agent
+
+# ---------------------------------------------------------------------------
+# Copy runtime application (custom agent loop, launcher, etc.)
+# ---------------------------------------------------------------------------
+COPY --chown=agent:agent . /app/
+WORKDIR /app
+
+# ---------------------------------------------------------------------------
+# Plugin path setup
+# ---------------------------------------------------------------------------
+# Point Claude Code to the pre-installed plugin
+ENV CLAUDE_PLUGINS_DIR="/opt/claude-plugins/claude-plugins-official/external_plugins"
+
+USER agent
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:15000/health 2>/dev/null || true
+
+# Default: Claude Code with Discord channel
+# Override with: docker run ... python3 -m src.runtime.agent_loop (legacy mode)
+ENTRYPOINT ["claude", "--channels", "plugin:discord@claude-plugins-official"]

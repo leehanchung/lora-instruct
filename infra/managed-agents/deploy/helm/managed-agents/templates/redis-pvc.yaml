@@ -1,0 +1,21 @@
+{{- if and .Values.redis.enabled .Values.redis.persistence.enabled }}
+# PersistentVolumeClaim for Redis data persistence
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "managed-agents.fullname" . }}-redis
+  labels:
+    {{- include "managed-agents.labels" . | nindent 4 }}
+    component: redis
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.redis.persistence.storageClass }}
+  storageClassName: {{ .Values.redis.persistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.redis.persistence.size }}
+
+{{- end }}

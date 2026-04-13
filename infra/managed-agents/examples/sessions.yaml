@@ -1,0 +1,131 @@
+# Example: launch 3 Claude Code bots, each connected to Discord.
+#
+# Usage:
+#   python -m src.runtime.launcher --config examples/sessions.yaml
+#
+# Each session runs in its own bubblewrap sandbox with:
+#   - Isolated filesystem (own /workspace, own .claude config)
+#   - Its own Discord bot token (one bot per session)
+#   - Its own system prompt and allowed tools
+#   - Network restricted to Anthropic API + Discord API only
+#
+# Prerequisites:
+#   - Create Discord bots at https://discord.com/developers/applications
+#   - Each bot needs: Message Content Intent enabled, bot scope, permissions:
+#     View Channels, Send Messages, Send Messages in Threads,
+#     Read Message History, Attach Files, Add Reactions
+#   - Set ANTHROPIC_API_KEY in your environment (or per-session below)
+
+defaults:
+  model: claude-sonnet-4-20250514
+  # anthropic_api_key: sk-ant-...  # Or set ANTHROPIC_API_KEY env var
+  discord_access_policy: allowlist
+  cpu_millicores: 1000
+  memory_mb: 2048
+  timeout_seconds: 0  # 0 = run forever (these are long-lived bots)
+
+sessions:
+  # ---------------------------------------------------------------------------
+  # Bot 1: Code Review Assistant
+  # ---------------------------------------------------------------------------
+  - name: code-review-bot
+    session_id: discord-code-review-001
+    discord_bot_token: "${DISCORD_BOT_TOKEN_REVIEW}"  # Set in environment
+    discord_allowed_servers:
+      - "1234567890"  # Your Discord server ID
+    discord_allowed_channels:
+      - "1234567891"  # #code-review channel
+
+    system_prompt: |
+      You are a senior code review assistant. When users share code or
+      ask for review:
+      - Analyze for bugs, security issues, and performance problems
+      - Suggest improvements with concrete code examples
+      - Be thorough but constructive
+      - If they share a GitHub PR URL, fetch and review it
+
+      You have access to a workspace at /workspace. Users can ask you
+      to clone repos, run tests, and analyze codebases.
+
+    allowed_tools:
+      - Read
+      - Write
+      - Edit
+      - Bash
+      - Glob
+      - Grep
+      - WebFetch
+
+    git_repos:
+      - https://github.com/your-org/your-repo
+
+  # ---------------------------------------------------------------------------
+  # Bot 2: DevOps / Infrastructure Assistant
+  # ---------------------------------------------------------------------------
+  - name: ops-bot
+    session_id: discord-ops-001
+    discord_bot_token: "${DISCORD_BOT_TOKEN_OPS}"
+    discord_allowed_servers:
+      - "1234567890"
+    discord_allowed_channels:
+      - "1234567892"  # #ops channel
+
+    model: claude-sonnet-4-20250514
+    cpu_millicores: 500  # Lighter workload
+    memory_mb: 1024
+
+    system_prompt: |
+      You are a DevOps assistant. Help with:
+      - Kubernetes troubleshooting and configuration
+      - Docker and container issues
+      - CI/CD pipeline debugging
+      - Infrastructure as code (Terraform, Helm)
+      - Monitoring and alerting setup
+
+      Be concise. Provide runnable commands when possible.
+      Always warn before suggesting destructive operations.
+
+    allowed_tools:
+      - Read
+      - Bash
+      - WebFetch
+      - WebSearch
+
+  # ---------------------------------------------------------------------------
+  # Bot 3: Research & Writing Assistant
+  # ---------------------------------------------------------------------------
+  - name: research-bot
+    session_id: discord-research-001
+    discord_bot_token: "${DISCORD_BOT_TOKEN_RESEARCH}"
+    discord_allowed_users:
+      - "9876543210"  # Your Discord user ID (DM access)
+
+    model: claude-sonnet-4-20250514
+    cpu_millicores: 2000  # Heavier workload (long documents)
+    memory_mb: 4096
+
+    system_prompt: |
+      You are a research and technical writing assistant. Help with:
+      - Literature review and paper summarization
+      - Technical blog post drafting
+      - Documentation writing
+      - Data analysis and visualization
+
+      When asked to research a topic, use web search to find current
+      information. Save drafts and notes to /workspace.
+
+    allowed_tools:
+      - Read
+      - Write
+      - Edit
+      - Bash
+      - WebFetch
+      - WebSearch
+
+    # Additional MCP servers beyond Discord
+    mcp_servers:
+      arxiv:
+        command: "python3"
+        args: ["-m", "arxiv_mcp_server"]
+        env:
+          ARXIV_MAX_RESULTS: "20"

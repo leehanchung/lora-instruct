@@ -1,0 +1,134 @@
+# Production values for managed-agents Helm chart
+# Use with: helm install managed-agents ./helm/managed-agents -f values-production.yaml
+
+global:
+  domain: agents.example.com
+  environment: production
+
+# API Server - HA configuration
+api:
+  replicas: 3
+  image:
+    repository: your-registry/managed-agents-api
+    tag: v0.1.0
+    pullPolicy: IfNotPresent
+  port: 8000
+  resources:
+    requests:
+      cpu: 1000m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  env:
+    LOG_LEVEL: warn
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+
+# Runtime configuration
+runtime:
+  image:
+    repository: your-registry/managed-agents-runtime
+    tag: v0.1.0
+  defaultResources:
+    requests:
+      cpu: "2"
+      memory: 4Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+  sessionTimeout: 1800
+
+# PostgreSQL - High availability with external managed database recommended
+postgresql:
+  enabled: false  # Use external managed PostgreSQL in production
+  # Configure external PostgreSQL connection:
+  # externalPostgres:
+  #   host: prod-db.example.com
+  #   port: 5432
+  #   url: postgresql://user:password@prod-db.example.com:5432/managed_agents
+
+# Redis - High availability with Redis Sentinel recommended
+redis:
+  enabled: false  # Use external managed Redis in production
+  # Configure external Redis connection:
+  # externalRedis:
+  #   host: prod-redis.example.com
+  #   port: 6379
+  #   url: redis://prod-redis.example.com:6379
+
+# Ingress - Enable with TLS
+ingress:
+  enabled: true
+  className: nginx
+  host: agents.example.com
+  tls:
+    enabled: true
+    issuer: letsencrypt-prod
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+
+# Session configuration - Production limits
+sessions:
+  namespace: managed-agents-sessions
+  ttlAfterFinished: 3600
+  maxConcurrent: 200
+  networkPolicy:
+    enabled: true
+    denyAllIngress: true
+    allowDNS: true
+    egressCIDRs:
+      - 0.0.0.0/0
+  resourceQuota:
+    enabled: true
+    limits:
+      pods: "500"
+      requests.cpu: "200"
+      requests.memory: 400Gi
+      limits.cpu: "400"
+      limits.memory: 800Gi
+
+# Monitoring - Enable in production
+monitoring:
+  prometheus:
+    enabled: true
+    scrapeInterval: 15s
+  serviceMonitor:
+    enabled: true
+    interval: 15s
+  logging:
+    level: warn
+    format: json
+
+# RBAC
+rbac:
+  enabled: true
+  serviceAccount:
+    create: true
+    name: managed-agents-api
+    annotations:
+      role: api-server
+
+# Pod security and scheduling
+affinity:
+  podAntiAffinity:
+    enabled: true
+    type: hard
+
+nodeSelector:
+  node-pool: compute
+
+tolerations:
+  - key: "dedicated"
+    operator: "Equal"
+    value: "agents"
+    effect: "NoSchedule"

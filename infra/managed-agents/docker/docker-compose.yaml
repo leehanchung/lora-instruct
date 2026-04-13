@@ -1,0 +1,122 @@
+version: '3.9'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: managed-agents-postgres
+    environment:
+      POSTGRES_DB: managed_agents
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      # PostgreSQL configuration for development
+      POSTGRES_INITDB_ARGS: "-c shared_buffers=256MB -c max_connections=200"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - managed-agents
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: managed-agents-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - managed-agents
+
+  # API Server (local development)
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: managed-agents-api
+    environment:
+      # Database
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/managed_agents
+      # Redis
+      REDIS_URL: redis://redis:6379
+      # LLM Configuration
+      LLM_DEFAULT_BACKEND: anthropic
+      LLM_ANTHROPIC_MODEL: claude-3-5-sonnet-20241022
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Session configuration
+      SESSION_NAMESPACE: managed-agents-sessions
+      SESSION_MAX_CONCURRENT: 50
+      SESSION_TTL_SECONDS: 3600
+      # Logging
+      LOG_LEVEL: info
+      PYTHONUNBUFFERED: 1
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      # Mount source code for hot-reload (development only)
+      - ./src:/app/src
+      - ./logs:/app/logs
+    networks:
+      - managed-agents
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/live"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Optional: vLLM for local inference (comment out if not needed)
+  # vllm:
+  #   image: vllm/vllm-openai:latest
+  #   container_name: managed-agents-vllm
+  #   environment:
+  #     VLLM_API_KEY: ${VLLM_API_KEY:-}
+  #   ports:
+  #     - "8001:8000"
+  #   volumes:
+  #     - vllm_cache:/root/.cache
+  #   command: >
+  #     --model meta-llama/Llama-3.1-8B-Instruct
+  #     --gpu-memory-utilization 0.8
+  #     --max-model-len 2048
+  #   networks:
+  #     - managed-agents
+  #   # Uncomment to use GPU (requires nvidia-docker)
+  #   # deploy:
+  #   #   resources:
+  #   #     reservations:
+  #   #       devices:
+  #   #         - driver: nvidia
+  #   #           count: 1
+  #   #           capabilities: [gpu]
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  # vllm_cache:
+  #   driver: local
+  logs:
+    driver: local
+
+networks:
+  managed-agents:
+    driver: bridge

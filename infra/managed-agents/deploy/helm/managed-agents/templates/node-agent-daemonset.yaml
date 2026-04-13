@@ -1,0 +1,107 @@
+{{- if and (eq .Values.orchestrator.backend "hybrid") .Values.orchestrator.nodeAgent.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "managed-agents.fullname" . }}-node-agent
+  labels:
+    {{- include "managed-agents.labels" . | nindent 4 }}
+    app: node-agent
+spec:
+  selector:
+    matchLabels:
+      {{- include "managed-agents.selectorLabels" . | nindent 6 }}
+      app: node-agent
+  template:
+    metadata:
+      labels:
+        {{- include "managed-agents.selectorLabels" . | nindent 8 }}
+        app: node-agent
+    spec:
+      {{- with .Values.orchestrator.nodeAgent.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.orchestrator.nodeAgent.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "managed-agents.serviceAccountName" . }}
+      containers:
+        - name: node-agent
+          image: "{{ .Values.orchestrator.nodeAgent.image.repository }}:{{ .Values.orchestrator.nodeAgent.image.tag }}"
+          imagePullPolicy: {{ .Values.orchestrator.nodeAgent.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.orchestrator.nodeAgent.port }}
+              name: http
+              protocol: TCP
+          env:
+            - name: WORKER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: MAX_SESSIONS
+              value: {{ .Values.orchestrator.nodeAgent.maxSessions | quote }}
+            - name: WORKSPACES_ROOT
+              value: {{ .Values.orchestrator.nodeAgent.workspacesRoot }}
+            - name: LOGS_ROOT
+              value: {{ .Values.orchestrator.nodeAgent.logsRoot }}
+            - name: REDIS_URL
+              value: {{ include "managed-agents.redis.url" . }}
+          resources:
+            {{- toYaml .Values.orchestrator.nodeAgent.resources | nindent 12 }}
+          securityContext:
+            # Node agent needs elevated privileges to run bubblewrap
+            # (creating user namespaces, bind mounts, seccomp)
+            privileged: false
+            capabilities:
+              add:
+                - SYS_ADMIN    # For bubblewrap namespace creation
+                - NET_ADMIN    # For network namespace isolation
+              drop:
+                - ALL
+          volumeMounts:
+            - name: workspaces
+              mountPath: {{ .Values.orchestrator.nodeAgent.workspacesRoot }}
+            - name: logs
+              mountPath: {{ .Values.orchestrator.nodeAgent.logsRoot }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+      volumes:
+        - name: workspaces
+          hostPath:
+            path: {{ .Values.orchestrator.nodeAgent.workspacesRoot }}
+            type: DirectoryOrCreate
+        - name: logs
+          hostPath:
+            path: {{ .Values.orchestrator.nodeAgent.logsRoot }}
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "managed-agents.fullname" . }}-node-agent
+  labels:
+    {{- include "managed-agents.labels" . | nindent 4 }}
+    app: node-agent
+spec:
+  # Headless service — the scheduler discovers individual pod IPs
+  clusterIP: None
+  selector:
+    {{- include "managed-agents.selectorLabels" . | nindent 4 }}
+    app: node-agent
+  ports:
+    - port: {{ .Values.orchestrator.nodeAgent.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+{{- end }}
