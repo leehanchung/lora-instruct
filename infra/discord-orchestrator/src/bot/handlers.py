@@ -29,28 +29,25 @@ class MessageHandler:
         self.dispatcher = dispatcher
 
     async def handle_channel_message(
-        self, message: discord.Message
+        self, message: discord.Message, prompt: str
     ) -> None:
-        """New message in a monitored channel → create thread, dispatch task."""
-        # Create a thread for this conversation
-        thread_name = message.content[:50].strip() or "Claude Code task"
+        """New @-mention in a channel → create thread, dispatch task."""
+        thread_name = prompt[:50].strip() or "Claude Code task"
         thread = await message.create_thread(name=thread_name)
 
-        # Create a session
         session = self.sessions.create_session(thread.id)
 
         logger.info(
             "task.new",
             thread_id=thread.id,
             session_id=session.session_id,
-            prompt_preview=message.content[:80],
+            prompt_preview=prompt[:80],
         )
 
-        # Dispatch and post result
-        await self._dispatch_and_respond(thread, session, message.content, resume=False)
+        await self._dispatch_and_respond(thread, session, prompt, resume=False)
 
     async def handle_thread_reply(
-        self, message: discord.Message
+        self, message: discord.Message, prompt: str
     ) -> None:
         """Reply inside an existing thread → resume or start new session."""
         thread = message.channel
@@ -66,7 +63,7 @@ class MessageHandler:
             resume=resume,
         )
 
-        await self._dispatch_and_respond(thread, session, message.content, resume=resume)
+        await self._dispatch_and_respond(thread, session, prompt, resume=resume)
 
     async def _dispatch_and_respond(
         self,

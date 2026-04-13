@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 
 import discord
@@ -14,6 +15,12 @@ from src.config import Settings
 from src.modal_dispatch.sandbox import SandboxDispatcher
 
 logger = structlog.get_logger()
+
+
+def _strip_mention(content: str, bot_id: int) -> str:
+    """Remove the bot's own @-mention tokens from a message, leaving the prompt."""
+    # Discord user mentions: <@ID> or <@!ID>
+    return re.sub(rf"<@!?{bot_id}>", "", content).strip()
 
 
 def create_bot(settings: Settings) -> discord.Client:
@@ -40,25 +47,40 @@ def create_bot(settings: Settings) -> discord.Client:
 
     @client.event
     async def on_message(message: discord.Message):
-        # Ignore own messages
-        if message.author == client.user:
+        # Ignore own messages and other bots
+        if message.author == client.user or message.author.bot:
             return
 
-        # Ignore bots
-        if message.author.bot:
+        bot_user = client.user
+        if bot_user is None:
             return
 
+        bot_mentioned = bot_user in message.mentions
         channel = message.channel
 
-        # Reply inside an existing thread → handle as continuation
+        # Thread reply: auto-continue if this thread is already ours, otherwise
+        # require an explicit @-mention to pull us into the conversation.
         if isinstance(channel, discord.Thread):
-            await handler.handle_thread_reply(message)
+            owns_thread = (
+                channel.owner_id == bot_user.id
+                or session_manager.get_session(channel.id) is not None
+            )
+            if not (owns_thread or bot_mentioned):
+                return
+            prompt = _strip_mention(message.content, bot_user.id)
+            if not prompt:
+                return
+            await handler.handle_thread_reply(message, prompt)
             return
 
-        # New message in a monitored channel → create thread + dispatch
+        # Top-level channel message: only respond when explicitly mentioned.
         if isinstance(channel, discord.TextChannel):
-            if channel.name.startswith(settings.discord_channel_prefix):
-                await handler.handle_channel_message(message)
+            if not bot_mentioned:
+                return
+            prompt = _strip_mention(message.content, bot_user.id)
+            if not prompt:
+                return
+            await handler.handle_channel_message(message, prompt)
 
     return client
 

@@ -12,7 +12,6 @@ class Settings(BaseSettings):
 
     # ── Discord ──────────────────────────────────────────────
     discord_bot_token: str
-    discord_channel_prefix: str = "claude"  # only respond in channels starting with this
 
     # ── Modal ────────────────────────────────────────────────
     modal_volume_name: str = "claude-workspaces"
