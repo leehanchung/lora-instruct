@@ -310,6 +310,20 @@ def run_claude_code(
     num_turns = 0
     duration_ms = 0
 
+    # Drain stderr concurrently so the subprocess never blocks trying to write
+    # to a full pipe while we're still reading stdout.  Without this, verbose
+    # Claude Code output (~64 KB+ on stderr) can deadlock the generator until
+    # the 280 s kill timer fires.
+    stderr_lines: list[str] = []
+
+    def _drain_stderr() -> None:
+        if proc.stderr is not None:
+            for _line in proc.stderr:
+                stderr_lines.append(_line)
+
+    stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+    stderr_thread.start()
+
     try:
         assert proc.stdout is not None
         for raw_line in proc.stdout:
@@ -328,11 +342,11 @@ def run_claude_code(
                 final_text = parsed.get("result") or "".join(accumulated_text)
                 try:
                     num_turns = int(parsed.get("num_turns") or 0)
-                except TypeError, ValueError:
+                except (TypeError, ValueError):
                     num_turns = 0
                 try:
                     duration_ms = int(parsed.get("duration_ms") or 0)
-                except TypeError, ValueError:
+                except (TypeError, ValueError):
                     duration_ms = 0
                 continue
 
@@ -345,7 +359,8 @@ def run_claude_code(
                 yield event  # type: ignore[misc]
 
         returncode = proc.wait()
-        stderr_text = proc.stderr.read() if proc.stderr is not None else ""
+        stderr_thread.join()
+        stderr_text = "".join(stderr_lines)
     finally:
         killer.cancel()
         if proc.poll() is None:
