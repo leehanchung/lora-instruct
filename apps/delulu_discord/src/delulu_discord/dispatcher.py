@@ -44,7 +44,15 @@ class SandboxDispatcher:
         attachments: list[tuple[str, bytes]] | None = None,
         message_id: int | None = None,
     ) -> str:
-        """Dispatch a task to Modal and return the output."""
+        """Dispatch a task to Modal and return the output.
+
+        The Modal function is now a generator that yields event dicts —
+        this method collects the stream, finds the terminal
+        ``done`` / ``error`` event, and returns the final text as a
+        plain string so the rest of the bot keeps its current shape.
+        The async-generator driver that actually streams events to
+        Discord will replace this in a follow-up commit.
+        """
         logger.info(
             "dispatch.start",
             session_id=session_id,
@@ -52,11 +60,12 @@ class SandboxDispatcher:
             attachment_count=len(attachments) if attachments else 0,
         )
 
-        # .remote() is synchronous — run in executor to not block the bot
+        # .remote_gen() is a synchronous iterator — drain it in an executor
+        # so the bot's event loop stays responsive.
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None,
-            lambda: self._fn.remote(
+            lambda: self._collect_events(
                 session_id=session_id,
                 workspace_path=workspace_path,
                 prompt=prompt,
@@ -72,3 +81,42 @@ class SandboxDispatcher:
             output_length=len(result),
         )
         return result
+
+    def _collect_events(
+        self,
+        *,
+        session_id: str,
+        workspace_path: str,
+        prompt: str,
+        resume: bool,
+        attachments: list[tuple[str, bytes]],
+        message_id: int | None,
+    ) -> str:
+        """Drain the Modal generator and return the final text.
+
+        On an ``error`` event this appends the error message to whatever
+        partial text was produced, mirroring the old ``run_claude_code``
+        behaviour of tacking ``[stderr]`` onto nonzero-exit output.
+        """
+        final_text = ""
+        error_message: str | None = None
+        for event in self._fn.remote_gen(
+            session_id=session_id,
+            workspace_path=workspace_path,
+            prompt=prompt,
+            resume=resume,
+            attachments=attachments,
+            message_id=message_id,
+        ):
+            etype = event.get("type") if isinstance(event, dict) else None
+            if etype == "done":
+                final_text = event.get("final_text") or final_text
+            elif etype == "error":
+                error_message = event.get("message") or "unknown error"
+        if error_message:
+            return (
+                f"{final_text}\n\n[error]\n{error_message}".strip()
+                if final_text
+                else f"[error] {error_message}"
+            )
+        return final_text
