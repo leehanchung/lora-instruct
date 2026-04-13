@@ -49,6 +49,11 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Surface the agent's full stdout/stderr in workflow logs so we
+          # can see what the review agent actually did (tool calls, final
+          # message) when the reviewer comment doesn't show up on a PR.
+          # Flip back to false once review behavior is stable.
+          show_full_output: true
           prompt: |
             You are reviewing a pull request in the SMILE-factory monorepo.
 
@@ -85,5 +90,19 @@ jobs:
               - Changes to PRDs under `prd/` — those are planning docs,
                 not production code
 
-            Be concise. If there are no substantive issues, post a short
-            approval comment rather than manufacturing feedback.
+            Be concise. Do not manufacture feedback to fill space.
+
+            **You MUST end every run by submitting exactly one PR review
+            via the `gh` CLI — never exit without submitting one.** This
+            makes you appear in the Reviewers box with an explicit state
+            rather than leaving an ambiguous plain comment. Use the PR
+            number from `${{ github.event.pull_request.number }}`.
+
+            - No substantive issues → `gh pr review <N> --approve --body "<short summary>"`
+            - Issues that must be fixed before merge → `gh pr review <N> --request-changes --body "<findings>"`
+            - Observations worth flagging but not blocking → `gh pr review <N> --comment --body "<findings>"`
+
+            If `gh pr review --approve` fails with a "cannot approve your
+            own pull request" error, fall back to `--comment` with the
+            same body — that happens when the PR author is the same
+            identity the workflow runs as.
