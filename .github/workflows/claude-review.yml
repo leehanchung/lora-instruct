@@ -33,6 +33,11 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
+      # Required for OIDC token exchange when the Anthropic GitHub App is
+      # installed — the action mints a GitHub-signed identity token and
+      # trades it for short-lived Anthropic credentials instead of using
+      # the raw CLAUDE_CODE_OAUTH_TOKEN secret.
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
