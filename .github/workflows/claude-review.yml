@@ -33,12 +33,18 @@ jobs:
     # Pinned so branch protection can require the check by a stable name
     # (`Claude PR review`) independent of workflow/file renames.
     name: Claude PR review
-    # Only fires on pull_request. `@claude` mentions on PRs go to the
-    # `fix` job below, not here — the two have different permissions
-    # and prompts.
+    # Only fires on pull_request events from human authors. `@claude`
+    # mentions on PRs go to the `fix` job below — the two have
+    # different permissions and prompts. Bot-authored PRs are skipped
+    # because (a) claude-code-action's `allowed_bots` default blocks
+    # them and they'd fail at startup anyway, and (b) when the fix job
+    # pushes a new commit to a PR branch, that triggers a new
+    # pull_request event — without this filter we'd burn subscription
+    # quota re-reviewing the same PR after every fix.
     if: >-
       github.event_name == 'pull_request'
       && github.event.pull_request.draft == false
+      && github.event.pull_request.user.login != 'claude[bot]'
     runs-on: ubuntu-latest
     concurrency:
       group: claude-review-${{ github.event.pull_request.number }}
@@ -129,9 +135,13 @@ jobs:
 
   fix:
     # On-demand fix flow: someone comments `@claude <request>` on a PR.
-    # The agent makes the requested changes and opens a *nested* PR
-    # against the source PR's head branch, so the fix is reviewable as
-    # a diff rather than silently rewriting the PR under the author.
+    # Tag mode is auto-detected from the issue_comment + @claude
+    # trigger. On an open PR, tag mode pushes new commits **directly**
+    # to the PR branch (see its own system prompt: "When triggered on
+    # an open PR: Always push directly to the existing PR branch").
+    # The fix shows up as a new commit on the same PR rather than as
+    # a separate nested PR — still reviewable in the PR's commit list,
+    # and this matches tag mode's native design.
     name: Claude PR fix
     if: >-
       github.event_name == 'issue_comment'
@@ -144,19 +154,20 @@ jobs:
       group: claude-fix-${{ github.event.issue.number }}
       cancel-in-progress: true
     permissions:
-      # `write` on contents is what lets the fix branch get pushed.
-      # The narrower `pull-requests: write` covers opening the nested
-      # PR. Tag mode's built-in gatekeeping only runs this for actors
-      # with repo write access, so a random PR commenter can't abuse it.
+      # `write` on contents is what lets the fix job push commits to
+      # the PR branch. Tag mode's built-in gatekeeping only runs this
+      # for actors with repo write access, so a random PR commenter
+      # can't abuse it.
       contents: write
       pull-requests: write
       issues: write
       id-token: write
     steps:
       # Tag mode's fetcher calls `git hash-object` / `git fetch` to
-      # compute SHAs and prepare the fix branch, so the runner needs an
-      # actual git working tree on disk. Without this step the action
-      # fails before any edits happen with "fatal: not a git repository".
+      # compute file SHAs and bootstrap the working tree, so the
+      # runner needs an actual git repo on disk. Without this step the
+      # action fails with "fatal: not a git repository" before any
+      # edits happen.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -164,19 +175,14 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          show_full_output: true
-          # Broader whitelist than the review job — the fix flow needs
-          # to run git (add/commit/push), gh (create the nested PR),
-          # and the built-in edit tools (Edit/Write/Read/Glob/Grep).
-          # Claude Code's --allowedTools replaces the default allowlist
-          # when set, so the built-ins have to be re-listed explicitly.
-          # WebFetch is included so the agent can read PR context from
-          # the GitHub REST API the same way the review job does.
-          claude_args: >-
-            --allowedTools "Edit,Write,Read,Glob,Grep,WebFetch,Bash(git:*),Bash(gh:*)"
-          # No explicit `prompt:` — in tag mode (auto-detected from the
-          # issue_comment + @claude mention), the action uses the
-          # comment body as the instruction and its built-in
-          # branch-and-PR machinery (see `branch_prefix` /
-          # `branch_name_template` in the action inputs) opens the
-          # nested PR against the source PR's head branch.
+          # No `claude_args --allowedTools` override here. Tag mode has
+          # its own carefully-designed allowlist that wires up the
+          # internal MCP file-ops tools and a specific `git-push.sh`
+          # wrapper script. Overriding --allowedTools replaces that
+          # list wholesale, which strips tag mode of the actual tools
+          # it uses to edit files and push — the agent then silently
+          # hallucinates "fixed and pushed" without running any edits.
+          # Let tag mode use its native defaults.
+          #
+          # No `prompt:` either — in tag mode the action uses the
+          # @claude comment body as the instruction.
