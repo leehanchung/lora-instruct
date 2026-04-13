@@ -1,0 +1,86 @@
+name: Claude PR review
+
+# Auto-reviews pull requests with Claude Code using a Pro/Max OAuth token
+# (no Anthropic API key needed). Reviews count against subscription rate
+# limits — the concurrency block below collapses rapid-fire pushes so we
+# don't burn quota re-reviewing the same PR on every force-push.
+#
+# Setup:
+#   1. Run `claude setup-token` locally → copy the printed token
+#   2. Add as a repo secret named CLAUDE_CODE_OAUTH_TOKEN
+#   3. (Optional) run `/install-github-app` inside Claude Code to auto-wire
+#
+# On-demand reviews: comment `@claude <request>` on a PR or issue.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Skip drafts by default — review them on demand via @claude mention
+    if: >-
+      (github.event_name == 'pull_request' && github.event.pull_request.draft == false)
+      || (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      # Required for OIDC token exchange when the Anthropic GitHub App is
+      # installed — the action mints a GitHub-signed identity token and
+      # trades it for short-lived Anthropic credentials instead of using
+      # the raw CLAUDE_CODE_OAUTH_TOKEN secret.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            You are reviewing a pull request in the SMILE-factory monorepo.
+
+            The active project is the **delulu Discord orchestrator** under
+            `apps/delulu_discord` (bot, runs in Docker on a VPS) and
+            `apps/delulu_sandbox_modal` (Modal sandbox function that runs
+            Claude Code). The root also contains archived LoRA-Instruct
+            fine-tuning code — lower priority for review unless the PR
+            explicitly touches it.
+
+            Focus your review on, in priority order:
+              1. **Correctness** — actual bugs, broken flows, missing
+                 error handling at system boundaries (Discord gateway,
+                 Modal dispatch, subprocess exec).
+              2. **Security** — credential handling, path traversal in the
+                 attachment-write path, subprocess argument injection,
+                 anything that widens the Modal sandbox's blast radius.
+              3. **Boundary invariants** — the bot must never import from
+                 `delulu_sandbox_modal` (they're deployed separately); the
+                 sandbox must never import bot-side Discord types. Flag any
+                 cross-boundary imports.
+              4. **Deployment impact** — changes under
+                 `apps/delulu_sandbox_modal/` require a Modal redeploy;
+                 changes under `apps/delulu_discord/` require a bot
+                 container rebuild. Flag if the PR description or commit
+                 messages don't mention which side is affected.
+              5. **Test coverage gaps** — note missing tests, but don't
+                 block on them (the project has minimal test infrastructure
+                 today).
+
+            Do **not** comment on:
+              - Style nits that ruff would catch (ruff runs in pre-commit)
+              - Documentation wording unless it's factually wrong
+              - Changes to PRDs under `prd/` — those are planning docs,
+                not production code
+
+            Be concise. If there are no substantive issues, post a short
+            approval comment rather than manufacturing feedback.
