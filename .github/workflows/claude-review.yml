@@ -54,6 +54,15 @@ jobs:
           # message) when the reviewer comment doesn't show up on a PR.
           # Flip back to false once review behavior is stable.
           show_full_output: true
+          # Whitelist only `gh pr review` so the agent can submit PR
+          # reviews. Claude Code's default bash allowlist blocks
+          # everything; without this, every `gh pr review --approve` call
+          # comes back as a permission_denial and the bot silently fails
+          # to post anything. Reading PR metadata/diff works via the
+          # default-allowed WebFetch tool against the GitHub REST API, so
+          # we don't need to whitelist `gh pr view`. Prefix-match syntax:
+          # Bash(<prefix>:*) matches any command beginning with <prefix>.
+          claude_args: --allowedTools "Bash(gh pr review:*)"
           prompt: |
             You are reviewing a pull request in the SMILE-factory monorepo.
 
