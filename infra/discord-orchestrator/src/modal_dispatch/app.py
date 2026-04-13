@@ -75,29 +75,34 @@ def run_claude_code(
 
     os.makedirs(workspace_path, exist_ok=True)
 
-    # ── Claude Code OAuth credentials ────────────────────────
-    # Persisted on the volume so refreshed/rotated refresh tokens survive
-    # across sandbox invocations. Seeded from the secret on first run.
-    persisted_creds = "/vol/claude-auth/.credentials.json"
-    home_claude_dir = os.path.expanduser("~/.claude")
-    home_creds = os.path.join(home_claude_dir, ".credentials.json")
-    os.makedirs(home_claude_dir, exist_ok=True)
-    os.makedirs(os.path.dirname(persisted_creds), exist_ok=True)
+    # ── Persistent Claude Code home on the Modal Volume ──────
+    # Point HOME at /vol/claude-home so Claude Code reads and writes its
+    # entire state directory (credentials, settings, session history under
+    # ~/.claude/projects/<hash-of-cwd>/) directly on the persistent volume.
+    # Combined with a deterministic per-thread workspace_path, this is what
+    # makes `claude --continue` work across ephemeral sandbox invocations.
+    claude_home = "/vol/claude-home"
+    claude_config = f"{claude_home}/.claude"
+    creds_file = f"{claude_config}/.credentials.json"
+    os.makedirs(claude_config, exist_ok=True)
 
-    if not os.path.exists(persisted_creds):
+    # One-time migration from the previous /vol/claude-auth/ layout.
+    legacy_creds = "/vol/claude-auth/.credentials.json"
+    if not os.path.exists(creds_file) and os.path.exists(legacy_creds):
+        shutil.copyfile(legacy_creds, creds_file)
+        os.chmod(creds_file, 0o600)
+
+    # Seed credentials from the Modal secret on first run.
+    if not os.path.exists(creds_file):
         seed = os.environ.get("CLAUDE_CREDENTIALS_JSON")
         if not seed:
             raise RuntimeError(
                 "No persisted Claude credentials and CLAUDE_CREDENTIALS_JSON "
                 "secret is empty — re-create the claude-oauth Modal secret."
             )
-        with open(persisted_creds, "w") as f:
+        with open(creds_file, "w") as f:
             f.write(seed)
-        os.chmod(persisted_creds, 0o600)
-        volume.commit()
-
-    shutil.copyfile(persisted_creds, home_creds)
-    os.chmod(home_creds, 0o600)
+        os.chmod(creds_file, 0o600)
 
     cmd = [
         "claude",
@@ -106,16 +111,17 @@ def run_claude_code(
         "--output-format", "text",
     ]
     if resume:
-        # --continue resumes the most recent Claude Code session in the cwd,
-        # which is our per-thread workspace — so this correctly picks up the
-        # right session without us having to track Claude Code's internal UUIDs.
-        # (--resume requires an explicit session ID and is incompatible with
-        # bot-generated session identifiers.)
+        # --continue resumes the most recent Claude Code session in the cwd.
+        # Since workspace_path is stable per thread (see session_manager) and
+        # ~/.claude/projects/<cwd-hash>/ lives on the volume, this finds the
+        # prior conversation. --resume wants an explicit Claude-internal UUID
+        # which we don't track, so --continue is the right primitive here.
         cmd.append("--continue")
 
     # ANTHROPIC_API_KEY is stripped — Claude Code prefers it over OAuth if set,
     # which would bypass the Pro/Max subscription auth.
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+    env["HOME"] = claude_home
     env["CLAUDE_PROJECT_DIR"] = workspace_path
 
     logger.info(
@@ -143,12 +149,8 @@ def run_claude_code(
             stderr=result.stderr[:500],
         )
 
-    # Persist any refreshed OAuth credentials back to the volume. The refresh
-    # token rotates on every refresh, so the next sandbox MUST see the new file.
-    if os.path.exists(home_creds):
-        shutil.copyfile(home_creds, persisted_creds)
-        os.chmod(persisted_creds, 0o600)
-
+    # Persist everything Claude Code wrote: rotated refresh tokens, new
+    # session history files, any settings updates.
     volume.commit()
 
     output = result.stdout.strip()

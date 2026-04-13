@@ -40,9 +40,15 @@ class SessionManager:
         self._ttl = ttl_seconds
 
     def create_session(self, thread_id: int, repo_url: str | None = None) -> Session:
-        """Create a new session for a thread."""
+        """Create a new session for a thread.
+
+        The workspace path is deterministic per thread_id — so across bot
+        restarts and TTL expiries the same Discord thread always maps to the
+        same directory on the Modal volume, and Claude Code's `--continue`
+        (which keys its history off cwd) finds the prior conversation.
+        """
         session_id = uuid.uuid4().hex[:12]
-        workspace_path = f"/vol/workspaces/{session_id}"
+        workspace_path = f"/vol/workspaces/{thread_id}"
 
         session = Session(
             session_id=session_id,
