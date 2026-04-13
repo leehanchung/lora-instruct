@@ -1,5 +1,15 @@
 # App separation refactor
 
+> **Status: shipped and further simplified.** This PRD describes splitting
+> a single-package `infra/discord-orchestrator/` into
+> `infra/discord-orchestrator/apps/delulu_discord` +
+> `infra/discord-orchestrator/apps/delulu_sandbox_modal`. That refactor
+> landed, and in a follow-up pass the `infra/discord-orchestrator/`
+> wrapper was dissolved entirely — `apps/`, `prd/`, `ARCHITECTURE.md`,
+> `Makefile`, and the merged `README.md` all live at the repo root now.
+> The layout descriptions below are preserved for historical context;
+> mentally strip the `infra/discord-orchestrator/` prefix from any path.
+
 Plan to split the current single-package layout into two independent apps
 under an `apps/` parent, each with its own deploy target and its own
 Makefile scoped to that target. The Discord bot (`delulu_discord`)

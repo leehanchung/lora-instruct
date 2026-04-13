@@ -310,7 +310,7 @@ Acquire with 60s timeout; surface a clean error on timeout.
 
 ## Critical files for implementation
 
-All paths are relative to `infra/discord-orchestrator/`:
+All paths are relative to the repo root:
 
 - `apps/delulu_sandbox_modal/src/delulu_sandbox_modal/app.py` — signature change + integrate `provision_workspace`
 - `apps/delulu_sandbox_modal/src/delulu_sandbox_modal/repo_provisioner.py` — **new**, all git logic

@@ -4,7 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - 'infra/discord-orchestrator/**'
+      - 'apps/**'
+      - 'Makefile'
       - '.github/workflows/discord-orchestrator-deploy.yml'
   workflow_dispatch:
 
@@ -27,8 +28,6 @@ jobs:
             git pull --ff-only
             NEW_SHA=$(git rev-parse HEAD)
             echo "Deploying $OLD_SHA -> $NEW_SHA"
-
-            cd infra/discord-orchestrator
 
             # Redeploy the Modal sandbox app only if its source changed
             # (or on a workflow_dispatch / unchanged HEAD, where we can't

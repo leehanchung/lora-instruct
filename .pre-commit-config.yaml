@@ -33,21 +33,21 @@ repos:
     -   id: ruff
         args:
         - --fix
-        exclude: ^infra/discord-orchestrator/
-# Modern ruff scoped to infra/discord-orchestrator/ only. Keeps the rest of
-# the monorepo on the legacy hook above, while this subproject uses current
-# ruff rules + format. Version should match the one in
-# infra/discord-orchestrator/pyproject.toml's dev extras.
+        exclude: ^apps/
+# Modern ruff scoped to apps/ only. Keeps the rest of the monorepo on the
+# legacy hook above, while the delulu sub-projects use current ruff rules +
+# format. Version should match the one in each sub-project's
+# pyproject.toml dev extras.
 -   repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.10
     hooks:
     -   id: ruff
-        name: ruff (discord-orchestrator)
-        files: ^infra/discord-orchestrator/.*\.py$
+        name: ruff (delulu)
+        files: ^apps/.*\.py$
         args: [--fix]
     -   id: ruff-format
-        name: ruff-format (discord-orchestrator)
-        files: ^infra/discord-orchestrator/.*\.py$
+        name: ruff-format (delulu)
+        files: ^apps/.*\.py$
 ci:
     autofix_commit_msg: 🎨 [pre-commit.ci] Auto format from pre-commit.com hooks
     autoupdate_commit_msg: ⬆ [pre-commit.ci] pre-commit autoupdate
