@@ -366,12 +366,12 @@ def run_claude_code(
         if proc.poll() is None:
             proc.kill()
             proc.wait()
-
-    # Persist everything Claude Code wrote: rotated refresh tokens, new
-    # session history files, any settings updates. This has to happen
-    # before the terminal event so a crash mid-commit doesn't strand the
-    # bot waiting on a Done we never reach.
-    volume.commit()
+        # Persist everything Claude Code wrote: rotated refresh tokens, new
+        # session history files, any settings updates. Must be inside finally
+        # so it runs even when the caller abandons the generator (GeneratorExit
+        # is thrown at a yield), preventing loss of OAuth tokens and session
+        # history on mid-stream cancellation.
+        volume.commit()
 
     if returncode != 0:
         logger.warning(
