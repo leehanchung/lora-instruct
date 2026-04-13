@@ -120,7 +120,7 @@ The setup has three parts:
 ### 2. Set up Modal
 
 ```bash
-cd infra/discord-orchestrator
+cd infra/discord-orchestrator/apps/delulu_sandbox_modal
 uv sync
 
 # Authenticate Modal (opens a browser)
@@ -152,7 +152,9 @@ the volume copy is the source of truth. If auth ever breaks, delete
 Deploy the sandbox app:
 
 ```bash
-make modal-deploy
+make -C apps/delulu_sandbox_modal modal-deploy
+# — or, from the top of the orchestrator —
+make deploy-modal
 ```
 
 ### 3. Run the bot
@@ -167,22 +169,23 @@ cp .env.example .env
 #### Option A — locally
 
 ```bash
-uv run bot
+cd apps/delulu_discord
+uv run delulu-discord
 ```
 
 #### Option B — Docker (any host)
 
 ```bash
-make deploy      # = make image + make restart
-make logs        # tail the container
+make -C apps/delulu_discord deploy   # = image + restart
+make -C apps/delulu_discord logs     # tail the container
 ```
 
-The Makefile expects `/root/disco.env` for the bot env file and
+The bot Makefile expects `/root/disco.env` for the bot env file and
 `/root/.modal.toml` for the Modal credentials. Override via env vars if
 your paths differ:
 
 ```bash
-make deploy ENV_FILE=$PWD/.env MODAL_TOML=$HOME/.modal.toml
+make -C apps/delulu_discord deploy ENV_FILE=$PWD/.env MODAL_TOML=$HOME/.modal.toml
 ```
 
 The Modal credential mount is what lets the bot dispatch sandboxes —
@@ -200,8 +203,8 @@ ssh root@<droplet-ip>
 apt update && apt install -y docker.io git
 systemctl enable --now docker
 
-git clone https://github.com/<you>/lora-instruct.git
-cd lora-instruct/infra/discord-orchestrator
+git clone https://github.com/<you>/SMILE-factory.git
+cd SMILE-factory/infra/discord-orchestrator
 cp .env.example .env
 nano .env   # paste DISCORD_BOT_TOKEN
 ```
@@ -221,12 +224,12 @@ EOF
 chmod 600 /root/disco.env
 ```
 
-Then build and run the container via the Makefile:
+Then build and run the container via the bot sub-project's Makefile:
 
 ```bash
-cd /root/lora-instruct/infra/discord-orchestrator
-make deploy      # docker build + stop/rm/run the disco container
-make logs        # tail to confirm it connected to Discord
+cd /root/SMILE-factory/infra/discord-orchestrator
+make deploy-bot                        # = make -C apps/delulu_discord deploy
+make -C apps/delulu_discord logs       # tail to confirm it connected to Discord
 ```
 
 The container runs with `--restart=unless-stopped`, so it survives
@@ -256,7 +259,7 @@ reference earlier context.
 If nothing happens:
 
 ```bash
-make logs
+make -C apps/delulu_discord logs
 ```
 
 Common failure modes:
@@ -272,15 +275,21 @@ Common failure modes:
 
 ### Lint and format
 
-Ruff (lint + formatter) is the only style tooling. Config lives in
-[`pyproject.toml`](pyproject.toml) under `[tool.ruff]`. It's installed
-as a dev extra, so run `make sync-dev` once (or whenever you `uv sync`
-fresh).
+Ruff (lint + formatter) is the only style tooling. Each sub-project
+owns its own `[tool.ruff]` config under
+`apps/delulu_discord/pyproject.toml` and
+`apps/delulu_sandbox_modal/pyproject.toml`. Ruff is installed as a dev
+extra in each, so run `make sync-dev` inside the sub-project once (or
+whenever you `uv sync` fresh).
 
 ```bash
-make check     # ruff check + format --check — no writes, suitable for CI
-make lint      # ruff check --fix
-make fmt       # ruff format (writes)
+# top-level, runs ruff across both apps
+make check
+
+# or scoped to one sub-project
+make -C apps/delulu_discord check
+make -C apps/delulu_discord lint      # ruff check --fix
+make -C apps/delulu_discord fmt       # ruff format (writes)
 ```
 
 ### Pre-commit hook
@@ -310,19 +319,20 @@ pre-commit run --all-files
 ## Updating manually
 
 ```bash
-cd ~/lora-instruct && git pull
+cd ~/SMILE-factory && git pull
 cd infra/discord-orchestrator
-make deploy                  # rebuild image + restart container
+make deploy-bot              # rebuild image + restart bot container
 ```
 
-If you changed anything under `src/modal_dispatch/`, also redeploy the
-Modal sandbox:
+If you changed anything under `apps/delulu_sandbox_modal/`, also
+redeploy the Modal sandbox:
 
 ```bash
-make modal-deploy
+make deploy-modal            # or: make deploy-all to do both in order
 ```
 
-`make help` lists all available targets.
+`make help` (at the top level or inside either sub-project) lists
+available targets.
 
 ---
 
@@ -333,11 +343,12 @@ The workflow at
 deploys on every push to `main` that touches `infra/discord-orchestrator/**`.
 
 It's a single job that SSHes into the droplet and runs the same
-`make` targets you'd run manually: `git pull`, then `make deploy`
-(rebuild image + restart container), plus `make sync modal-deploy`
-conditionally when files under `src/modal_dispatch/` actually changed.
-No container registry, no image pushes — the droplet is both the build
-and run target.
+`make` targets you'd run manually: `git pull`, then
+`make -C apps/delulu_discord deploy` (rebuild image + restart
+container), plus `make -C apps/delulu_sandbox_modal sync modal-deploy`
+conditionally when files under `apps/delulu_sandbox_modal/` actually
+changed. No container registry, no image pushes — the droplet is both
+the build and run target.
 
 ### One-time droplet prep
 
@@ -346,7 +357,7 @@ The workflow assumes the droplet is already set up as described in
 above — i.e.:
 
 - Docker installed
-- `/root/lora-instruct` checked out (the workflow runs `git pull` inside it)
+- `/root/SMILE-factory` checked out (the workflow runs `git pull` inside it)
 - `/root/disco.env` containing `DISCORD_BOT_TOKEN=...`
 - `/root/.modal.toml` as a real file (from `uv run modal token new` on the droplet)
 - `uv` installed and on `$PATH` for the `root` user (needed for the
@@ -413,12 +424,12 @@ Rollback is a manual `git` operation on the droplet:
 
 ```bash
 ssh root@<droplet-ip>
-cd /root/lora-instruct
+cd /root/SMILE-factory
 git log --oneline -10             # find the commit you want to roll back to
 git reset --hard <good-sha>
 
 cd infra/discord-orchestrator
-make deploy                       # or `make sync modal-deploy deploy` if sandbox code rolled back too
+make deploy-bot                   # or `make deploy-all` if sandbox code rolled back too
 ```
 
 Then force-revert on the remote once you've confirmed the rollback works,
