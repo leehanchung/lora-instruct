@@ -51,8 +51,8 @@ jobs:
         with:
           fetch-depth: 1
 
-      # Load the review instructions from the pr-review skill file.
-      # Keeping the prompt in `.claude/skills/pr-review/SKILL.md`
+      # Load the review instructions from the code-review skill file.
+      # Keeping the prompt in `.claude/skills/code-review/SKILL.md`
       # means it's versioned, editable as plain markdown, renders in
       # the GitHub file viewer, and is ALSO discoverable by `claude`
       # running interactively against this repo (the file uses the
@@ -61,7 +61,7 @@ jobs:
       # prompt — we don't rely on claude-code-action auto-loading
       # skills from `.claude/skills/`, because that path isn't
       # verified to work in agent mode.
-      - name: Load pr-review skill
+      - name: Load code-review skill
         id: skill
         run: |
           {
@@ -69,7 +69,7 @@ jobs:
             # Strip YAML frontmatter: skip everything up to and
             # including the second `---` line, then print the rest.
             awk 'BEGIN{c=0} /^---$/{c++; next} c>=2{print}' \
-              .claude/skills/pr-review/SKILL.md
+              .claude/skills/code-review/SKILL.md
             echo ''
             echo '---'
             echo ''
@@ -122,8 +122,8 @@ jobs:
           # WebFetch tool against the GitHub REST API, so we don't
           # need to whitelist `gh pr view`.
           claude_args: --allowedTools "Write,Bash(gh pr review:*)"
-          # The review prompt lives in .claude/skills/pr-review/SKILL.md
-          # and is loaded by the preceding "Load pr-review skill" step.
+          # The review prompt lives in .claude/skills/code-review/SKILL.md
+          # and is loaded by the preceding "Load code-review skill" step.
           # Edit that file to change review behavior; don't inline
           # prompt content here.
           prompt: ${{ steps.skill.outputs.prompt }}

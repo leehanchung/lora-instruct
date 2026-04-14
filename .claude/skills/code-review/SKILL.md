@@ -1,5 +1,5 @@
 ---
-name: pr-review
+name: code-review
 description: Review a pull request for the SMILE-factory monorepo. Produces exactly one advisory PR review (approve or comment, never request-changes) via `gh pr review --body-file`. Mirrors the multi-step, high-signal approach from anthropics/claude-code's code-review plugin but scoped to the delulu Discord orchestrator architecture.
 ---
 
