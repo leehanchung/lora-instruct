@@ -38,10 +38,11 @@ cold-start problem and is being replaced by the scheme below.
 
 | Question | Choice |
 |---|---|
-| Repo specification UX | Per-channel binding via `/setrepo` slash command |
+| Repo specification UX | Per-channel binding via `/setrepo` slash command. Argument is `repo:<owner>/<repo>` short form (not full URL), autocompleted from the server's allowlist. |
 | Git auth | Public repos only for clone; optional PAT for `/commit` push |
 | Warm container pool | No — cold container start is acceptable |
-| v1 scope | Provisioning + `/commit` commit-back |
+| Access control | Per-server allowlist stored in `modal.Dict`, managed via admin-only slash commands gated on Discord's `MANAGE_GUILD` permission. `/setrepo` rejects any repo not on the server's allowlist. See "Access control and threat model" below. |
+| v1 scope | Provisioning + allowlist + `/commit` commit-back |
 
 ### Note on the auth / commit-back tension
 
@@ -52,6 +53,80 @@ optional `github-pat` Modal secret and errors cleanly if it's absent
 (`"configure github-pat Modal secret to enable push; changes are
 committed locally on the volume"`). Users who only care about read/edit
 get zero-setup v1; users who want push set the secret separately.
+
+## Access control and threat model
+
+An unlimited `/setrepo url:<anything>` is a denial-of-service waiting to
+happen. The bot owner (the person running the Modal app and paying the
+Claude Pro/Max subscription) needs to be able to say "these specific
+repos are the only ones my bot works on in this Discord server."
+
+### Threats the allowlist addresses
+
+1. **Cost DoS.** Without a limiter, any channel member can `/setrepo
+   url:torvalds/linux` and wedge the Modal volume with a 10+ minute
+   clone that bills the bot owner for egress, disk, and compute.
+2. **Accidental scope creep.** The bot stops being "Claude Code for
+   my team's repos" and drifts into "general Claude Code for any
+   GitHub repo," burning subscription quota on random third-party work.
+3. **Secret-echo risk.** Even on public repos, Claude can read config
+   files and surface them in Discord messages. Constraining the set of
+   repos reduces the blast radius of an accidental leak.
+4. **Unbounded disk pressure.** `/vol/repo-cache/` grows indefinitely
+   without GC. An allowlist naturally bounds cache size to the number
+   of registered repos × their sizes.
+
+### Storage and admin model
+
+The allowlist lives in a `modal.Dict` on the bot side, keyed by Discord
+`guild_id`. Each value is a list of `owner/repo` short forms:
+
+```
+modal.Dict["discord-orchestrator-allowlist"]:
+  {
+    guild_id (int) -> list[str]  # ["alice/api-service", "alice-org/shared-lib"]
+  }
+```
+
+Admin slash commands (gated on `MANAGE_GUILD` via
+`@app_commands.default_permissions(manage_guild=True)`) manage the
+allowlist per-server:
+
+| Command | Effect |
+|---|---|
+| `/admin_addrepo repo:<owner>/<repo>` | Add a repo to this server's allowlist. Validates the URL via `git ls-remote` before accepting — rejects private or non-existent repos at bind time, not at first dispatch. |
+| `/admin_removerepo repo:<owner>/<repo>` | Remove a repo from this server's allowlist. Autocompletes from the current list. Does NOT retroactively unbind channels that were already pointing at the repo; existing bindings stay intact until explicitly `/unsetrepo`'d. |
+| `/admin_listrepos` | Show the current allowlist for this server. |
+
+The `MANAGE_GUILD` gate means only users with the Discord
+"Manage Server" permission (server owners, admins, and moderators who
+have been granted that role) can edit the allowlist. Regular channel
+members can `/setrepo` an allowlisted repo but cannot add new ones.
+
+### `/setrepo` behavior under the allowlist
+
+`/setrepo repo:<owner>/<repo> ref:<str=HEAD>`:
+
+1. Parse `repo` as `owner/repo` short form. Reject with a clean error
+   if the format is wrong.
+2. Look up the server's allowlist via `RepoAllowlist.get(guild_id)`.
+   If the repo isn't on the list, reply ephemerally with the list of
+   allowed repos and tell the user how to request one be added
+   (contact a `MANAGE_GUILD` role holder).
+3. If accepted, derive the full URL (`https://github.com/<owner>/<repo>`)
+   and store the binding via `RepoConfig.set(channel_id, repo_url, ref)`.
+
+Discord's slash command autocomplete (`@app_commands.autocomplete` on
+the `repo` argument) feeds from the server's allowlist, so users see a
+dropdown of allowed repos instead of needing to know the exact names.
+
+### Out-of-band setup
+
+On first install in a new Discord server, the allowlist is empty and
+the server admin must `/admin_addrepo` at least one repo before
+`/setrepo` becomes useful. The bot's first-run DM to the installer
+should mention this — "install complete. Add a repo with
+`/admin_addrepo` (Manage Server permission required)."
 
 ## Recommended mechanism: bare cache + worktrees + blob:none
 
@@ -217,18 +292,76 @@ class RepoConfig:
     def unset(self, channel_id: int) -> None: ...
 ```
 
+### New: `apps/delulu_discord/src/delulu_discord/repo_allowlist.py`
+
+Companion to `repo_config.py` — a thin wrapper around
+`modal.Dict.from_name("discord-orchestrator-allowlist",
+create_if_missing=True)` for per-server repo allowlists. Keyed by
+Discord `guild_id`, values are lists of `owner/repo` short forms.
+
+```python
+class RepoAllowlist:
+    def __init__(self) -> None:
+        self._dict = modal.Dict.from_name(
+            "discord-orchestrator-allowlist", create_if_missing=True
+        )
+
+    def get(self, guild_id: int) -> list[str]:
+        """Return the list of allowed `owner/repo` entries for a guild.
+        Returns [] if the guild has no allowlist yet."""
+
+    def add(self, guild_id: int, owner_repo: str) -> None:
+        """Add an `owner/repo` entry to a guild's allowlist. Idempotent."""
+
+    def remove(self, guild_id: int, owner_repo: str) -> None:
+        """Remove an `owner/repo` entry. No-op if not present."""
+
+    def contains(self, guild_id: int, owner_repo: str) -> bool:
+        """True iff the entry is on the guild's allowlist."""
+```
+
+Validation at add time happens in the `/admin_addrepo` command handler,
+not in this module — the module is a pure store. The command handler
+runs `git ls-remote https://github.com/<owner>/<repo>` before calling
+`add()` to reject private/nonexistent repos immediately.
+
 ### Modify: `apps/delulu_discord/src/delulu_discord/main.py` + `handlers.py`
 
-- Register slash commands via `discord.app_commands` (already supported in
-  the `discord.py` version already in the lockfile). Two commands:
-  - `/setrepo url:<str> ref:<str=HEAD>` — bind repo to channel
-  - `/unsetrepo` — clear the channel binding
-  - `/commit message:<str>` — commit and (try to) push via optional PAT
+Register slash commands via `discord.app_commands`. Five commands total —
+three user-facing, three admin. (Yes, `/setrepo` overlaps both lists; it's
+user-facing but gated by the allowlist populated by admins.)
+
+**User-facing (no permission gate):**
+
+- `/setrepo repo:<owner>/<repo> ref:<str=HEAD>` — bind repo to channel.
+  Rejects with the current allowlist shown if `repo` isn't on it.
+  `repo` argument autocompletes from the server's allowlist via
+  `@app_commands.autocomplete` fed by `RepoAllowlist.get(guild_id)`.
+- `/unsetrepo` — clear the channel binding.
+- `/commit message:<str>` — commit and (try to) push via optional PAT.
+
+**Admin-only (gated on `MANAGE_GUILD` via
+`@app_commands.default_permissions(manage_guild=True)`):**
+
+- `/admin_addrepo repo:<owner>/<repo>` — validate via `git ls-remote`
+  and add to the server's allowlist. Rejects private/nonexistent repos
+  at bind time.
+- `/admin_removerepo repo:<owner>/<repo>` — remove from allowlist.
+  `repo` argument autocompletes from the current allowlist. Does NOT
+  retroactively unbind channels already pointing at the repo — existing
+  bindings persist until explicitly `/unsetrepo`'d.
+- `/admin_listrepos` — show the server's current allowlist. Ephemeral
+  response (only the admin sees it).
+
+**Handler-side logic:**
+
 - `on_message` handler, when dispatching a new thread, looks up the
   channel's binding via `RepoConfig.get(channel.id)` and passes
-  `repo_url` / `ref` into `dispatcher.run_task(...)`.
-- Thread replies inherit the session's stored `repo_url` / `ref` from the
-  `SessionManager` — no binding lookup on every reply.
+  `repo_url` / `ref` into `dispatcher.run_task(...)`. If no binding,
+  dispatch against an empty workspace as today (general Q&A mode).
+- Thread replies inherit the session's stored `repo_url` / `ref` from
+  the `SessionManager` — no binding lookup on every reply, no re-check
+  against the allowlist (bindings are grandfathered at thread creation).
 
 ### Modify: `apps/delulu_discord/src/delulu_discord/settings.py`
 
@@ -294,7 +427,15 @@ Acquire with 60s timeout; surface a clean error on timeout.
    per phase.
 
 3. **End-to-end Discord smoke test**:
-   - `/setrepo <url>` in a test channel → bind succeeds.
+   - As a non-admin user, `/setrepo repo:alice/api-service` with an
+     empty server allowlist → rejected with a "not in the allowlist"
+     message.
+   - As a server admin, `/admin_addrepo repo:alice/api-service` →
+     validates via `git ls-remote`, succeeds. `/admin_listrepos` →
+     shows the repo.
+   - Non-admin user, `/setrepo repo:alice/api-service` → now succeeds;
+     autocomplete dropdown on the `repo:` argument shows
+     `alice/api-service`.
    - `@corchestra summarize the README` → first invocation creates bare
      cache and worktree, result posts in thread.
    - Follow-up reply (no @mention) → `claude --continue` resumes in the
@@ -303,6 +444,9 @@ Acquire with 60s timeout; surface a clean error on timeout.
    - `/commit "test commit"` without PAT → local commit succeeds,
      "configure github-pat" message shown.
    - Configure `github-pat`, re-run `/commit` → push succeeds.
+   - As a non-admin user, `/admin_removerepo` → rejected by Discord
+     itself (MANAGE_GUILD permission missing), before the command
+     handler runs.
 
 4. **`provision.timing` logs** captured on Modal dashboard after a week
    of real use → check p50 cold vs warm to validate the budget table
@@ -315,11 +459,40 @@ All paths are relative to the repo root:
 - `apps/delulu_sandbox_modal/src/delulu_sandbox_modal/app.py` — signature change + integrate `provision_workspace`
 - `apps/delulu_sandbox_modal/src/delulu_sandbox_modal/repo_provisioner.py` — **new**, all git logic
 - `apps/delulu_discord/src/delulu_discord/dispatcher.py` — pass `repo_url` / `ref` through to `run_claude_code`
-- `apps/delulu_discord/src/delulu_discord/main.py` — register slash commands (`/setrepo`, `/unsetrepo`, `/commit`)
+- `apps/delulu_discord/src/delulu_discord/main.py` — register user + admin slash commands
 - `apps/delulu_discord/src/delulu_discord/handlers.py` — look up channel binding on dispatch
-- `apps/delulu_discord/src/delulu_discord/repo_config.py` — **new**, `modal.Dict`-backed binding store
+- `apps/delulu_discord/src/delulu_discord/repo_config.py` — **new**, `modal.Dict`-backed channel→repo binding store
+- `apps/delulu_discord/src/delulu_discord/repo_allowlist.py` — **new**, `modal.Dict`-backed per-server allowlist store
 - `apps/delulu_discord/src/delulu_discord/session_manager.py` — store `repo_url` / `ref` on Session
 - `apps/delulu_discord/src/delulu_discord/settings.py` — new config fields
+
+## Open UX decisions (resolve before implementation)
+
+These are design calls flagged during the scenario walkthrough but
+not yet locked in:
+
+1. **`/commit` without a PAT: refuse-and-instruct, or commit-locally-
+   and-instruct?** The PRD currently says "commit locally on the
+   volume, tell the user to configure the PAT and re-run." That means
+   the commit exists only on the Modal volume in a state the user
+   can't see, inspect, or share. Alternative: refuse the `/commit`
+   entirely when no PAT is configured, with a clear "configure
+   `github-pat` first, then re-run" message. Refusing is less magical
+   and avoids hidden state. **Recommendation: refuse-and-instruct.**
+
+2. **`/setrepo` URL validation timing.** Validate via `git ls-remote`
+   at bind time (catches typos and private repos immediately while
+   the user is in flow with the command), or accept anything and
+   fail at first dispatch (simpler implementation, worse feedback
+   loop)? **Recommendation: validate at bind time.** Note: with the
+   allowlist in place, `/admin_addrepo` is where this validation
+   happens, not `/setrepo` — so this question is moot if the
+   allowlist is the only path in. Keeping it listed as a reminder.
+
+3. **Active-repo visibility in the `LiveStatus` header.** Should the
+   streaming status message show `running in alice/api-service@main`
+   so users in a channel with multiple open threads stay oriented?
+   **Recommendation: add it, cheap win.**
 
 ## Out of scope — park for v2
 
@@ -329,3 +502,6 @@ All paths are relative to the repo root:
 - Auto-PR via `gh` CLI.
 - Submodules, Git LFS.
 - `min_containers=1` warm pool.
+- Per-user dispatch rate limits (independent of allowlist — someone
+  in an allowlisted channel can still spam `@corchestra` and burn
+  subscription quota). Revisit if it becomes a real problem.
