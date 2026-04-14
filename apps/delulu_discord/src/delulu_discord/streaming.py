@@ -232,10 +232,17 @@ class LiveStatus:
             self._dirty = False
             return
         try:
+            # NOTE: do NOT pass ``suppress_embeds`` here — ``Message.edit``
+            # in discord.py 2.4 does not accept it and raises ``TypeError``
+            # on every edit, which used to crash the whole flush loop
+            # and then ``finalize_done``, leaving the status message
+            # stuck on the initial placeholder forever. The embed-
+            # suppressed flag is set once on the initial ``thread.send``
+            # in ``handlers._dispatch_and_respond`` and inherited by
+            # subsequent edits.
             await self.status_msg.edit(
                 content=rendered,
                 allowed_mentions=discord.AllowedMentions.none(),
-                suppress_embeds=True,
             )
             self._last_rendered = rendered
             self._dirty = False
@@ -260,12 +267,17 @@ class LiveStatus:
         self._flush_task = None
 
     async def _safe_edit(self, content: str) -> None:
+        # Same caveat as _flush_once: no ``suppress_embeds`` on edit.
         try:
             await self.status_msg.edit(
                 content=content,
                 allowed_mentions=discord.AllowedMentions.none(),
-                suppress_embeds=True,
             )
             self._last_rendered = content
         except discord.HTTPException:
+            logger.exception("streaming.edit_failed")
+        except Exception:
+            # Anything else (TypeError from a future kwarg mismatch,
+            # etc.) is a bug worth surfacing in logs but must not
+            # propagate out of finalize_done and break the handler.
             logger.exception("streaming.edit_failed")

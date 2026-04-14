@@ -93,7 +93,17 @@ class MessageHandler:
         On error the status message freezes on its last rendered state
         and a separate ``⚠️`` message carries the error details.
         """
-        status_msg = await thread.send(INITIAL_PLACEHOLDER)
+        # ``suppress_embeds`` is set here on the send — it's valid on
+        # ``Messageable.send`` but NOT on ``Message.edit`` in discord.py
+        # 2.4 (that's the crash that broke the initial Commit 3 ship).
+        # The flag sticks across edits, so setting it once at post time
+        # is enough to keep the live status from unfurling any URLs
+        # that might appear in tool summaries.
+        status_msg = await thread.send(
+            INITIAL_PLACEHOLDER,
+            allowed_mentions=discord.AllowedMentions.none(),
+            suppress_embeds=True,
+        )
         live = LiveStatus(status_msg)
         live.start()
 
