@@ -11,6 +11,7 @@ LoRA-Instruct: LoRA fine-tuning for open-source causal LLMs using HuggingFace PE
 
 ## Docs
 
+- [Monorepo conventions](docs/monorepo-conventions.md) — how pre-commit, CI, branch protection, and per-app Makefiles interact in this multi-pyproject layout. Read this before touching `.pre-commit-config.yaml`, `.github/workflows/delulu-deploy.yaml`, or any root-level tooling
 - [Architecture](docs/architecture.md) — project structure, key components, and dependencies
 - [Development](docs/development.md) — setup, linting, testing, training, and code conventions
 
