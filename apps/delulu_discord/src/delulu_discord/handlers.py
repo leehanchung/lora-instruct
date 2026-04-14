@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 import discord
 import structlog
 
+from delulu_discord.streaming import INITIAL_PLACEHOLDER, LiveStatus
+
 if TYPE_CHECKING:
     from delulu_discord.dispatcher import SandboxDispatcher
     from delulu_discord.session_manager import SessionManager
@@ -79,46 +81,63 @@ class MessageHandler:
         *,
         resume: bool,
     ) -> None:
-        """Run Claude Code in a Modal sandbox and post the result.
+        """Run Claude Code and stream live progress into a status message.
 
-        ``dispatcher.run_task`` is now an async generator that yields
-        event dicts. This method drains the stream, picks the final
-        text out of the terminal ``done`` / ``error`` event, and still
-        posts a single message at the end — the live status message
-        and 1-edit/sec flush loop land in a follow-up commit.
+        Posts an initial ``💭 Thinking…`` message, spawns a background
+        flush loop that edits that message at most once per second as
+        events arrive, collapses the status to ``✅ Done • N tools • Ts``
+        when the stream ends, and then posts the final assistant text
+        as a separate message (so it's findable in Discord search and
+        isn't buried inside a long transcript).
+
+        On error the status message freezes on its last rendered state
+        and a separate ``⚠️`` message carries the error details.
         """
+        status_msg = await thread.send(INITIAL_PLACEHOLDER)
+        live = LiveStatus(status_msg)
+        live.start()
+
         final_text = ""
+        duration_ms = 0
         error_message: str | None = None
-        async with thread.typing():
-            try:
-                async for event in self.dispatcher.run_task(
-                    session_id=session.session_id,
-                    workspace_path=session.workspace_path,
-                    prompt=prompt,
-                    resume=resume,
-                    attachments=attachments,
-                    message_id=message_id,
-                ):
-                    etype = event.get("type") if isinstance(event, dict) else None
-                    if etype == "done":
-                        final_text = event.get("final_text") or final_text
-                    elif etype == "error":
-                        error_message = event.get("message") or "unknown error"
-            except Exception:
-                logger.exception("task.failed", session_id=session.session_id)
-                await thread.send("Something went wrong running that task. Check the logs.")
-                return
+
+        try:
+            async for event in self.dispatcher.run_task(
+                session_id=session.session_id,
+                workspace_path=session.workspace_path,
+                prompt=prompt,
+                resume=resume,
+                attachments=attachments,
+                message_id=message_id,
+            ):
+                live.push(event)
+                etype = event.get("type") if isinstance(event, dict) else None
+                if etype == "done":
+                    final_text = event.get("final_text") or final_text
+                    duration_ms = int(event.get("duration_ms") or 0)
+                elif etype == "error":
+                    error_message = event.get("message") or "unknown error"
+        except Exception:
+            logger.exception("task.failed", session_id=session.session_id)
+            await live.finalize_error()
+            await thread.send("Something went wrong running that task. Check the logs.")
+            return
+
+        num_tools = sum(
+            1 for e in live.transcript if isinstance(e, dict) and e.get("type") == "tool_use"
+        )
 
         if error_message:
-            output = (
-                f"{final_text}\n\n[error]\n{error_message}".strip()
-                if final_text
-                else f"[error] {error_message}"
+            await live.finalize_error()
+            await thread.send(
+                f"⚠️ {error_message}",
+                allowed_mentions=discord.AllowedMentions.none(),
+                suppress_embeds=True,
             )
-        else:
-            output = final_text
+            return
 
-        await self._post_result(thread, output)
+        await live.finalize_done(num_tools=num_tools, duration_ms=duration_ms)
+        await self._post_result(thread, final_text)
 
     async def _post_result(self, thread: discord.Thread, output: str) -> None:
         """Post output to thread, falling back to file upload if too long."""

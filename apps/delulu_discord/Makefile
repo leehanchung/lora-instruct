@@ -1,4 +1,4 @@
-.PHONY: help sync sync-dev lint fmt check image restart deploy logs stop shell
+.PHONY: help sync sync-dev lint fmt check test image restart deploy logs stop shell
 
 # Configurable knobs — override with e.g. `make deploy IMAGE=myimage`.
 BOT_NAME   ?= disco
@@ -11,6 +11,7 @@ help:
 	@echo "  make sync          uv sync runtime deps"
 	@echo "  make sync-dev      uv sync runtime + dev deps"
 	@echo "  make check         ruff check + format --check"
+	@echo "  make test          pytest"
 	@echo "  make lint          ruff check --fix"
 	@echo "  make fmt           ruff format"
 	@echo "  make image         docker build the bot image"
@@ -35,6 +36,9 @@ lint: sync-dev
 
 fmt: sync-dev
 	uv run ruff format .
+
+test: sync-dev
+	uv run pytest
 
 image:
 	docker build -t $(IMAGE) .
