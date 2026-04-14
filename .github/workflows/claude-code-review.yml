@@ -1,0 +1,168 @@
+name: Claude Code Review
+
+# Auto-reviews pull requests with Claude Code using a Pro/Max OAuth token
+# (no Anthropic API key needed). Reviews count against subscription rate
+# limits — the concurrency block collapses rapid-fire pushes so we don't
+# burn quota re-reviewing the same PR on every force-push.
+#
+# This file only handles the auto-review path. @claude mentions (on PR
+# comments, inline review comments, review bodies, and issues) go
+# through claude.yml — the two workflows have different permissions
+# and trigger surfaces.
+#
+# Setup:
+#   1. Run `claude setup-token` locally → copy the printed token
+#   2. Add as a repo secret named CLAUDE_CODE_OAUTH_TOKEN
+#   3. (Optional) run `/install-github-app` inside Claude Code to auto-wire
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  review:
+    # Pinned so branch protection can require the check by a stable name
+    # (`Claude PR review`) independent of workflow/file renames.
+    name: Claude PR review
+    # Skip drafts, and skip PRs authored by claude[bot]. The bot filter
+    # prevents review→fix→review loops: when the claude.yml tag job
+    # pushes a fix commit, that fires a pull_request synchronize event;
+    # without this filter we'd burn quota re-reviewing bot-authored
+    # changes, and claude-code-action would fail on them anyway with
+    # "Workflow initiated by non-human actor".
+    if: >-
+      github.event.pull_request.draft == false
+      && github.event.pull_request.user.login != 'claude[bot]'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: claude-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      # Required for OIDC token exchange when the Anthropic GitHub App is
+      # installed — the action mints a GitHub-signed identity token and
+      # trades it for short-lived Anthropic credentials instead of using
+      # the raw CLAUDE_CODE_OAUTH_TOKEN secret.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Allow claude[bot] as a triggering actor. The action's
+          # default `allowed_bots: ""` rejects any event triggered by
+          # a bot as a prompt-injection defense. That's correct for
+          # untrusted bots, but rejects our own fix-job re-review
+          # flow: when claude.yml pushes a fix commit to a PR, the
+          # resulting `pull_request synchronize` event has
+          # `github.actor == 'claude[bot]'`, and without this line
+          # the review job fails at startup with "Workflow initiated
+          # by non-human actor". That would block the whole "fix,
+          # then re-review and approve" loop.
+          #
+          # Safe in our case: the prompt is fixed by us (the bot
+          # doesn't control instructions), and the diff content is
+          # still under human control (human authored the PR, bot
+          # only pushed a commit the human explicitly requested via
+          # @claude). Keeping the list narrow to claude[bot] only so
+          # other bots (dependabot etc.) still require manual review.
+          allowed_bots: "claude[bot]"
+          # Surface the agent's full stdout/stderr in workflow logs so we
+          # can see what the review agent actually did (tool calls, final
+          # message) when the reviewer comment doesn't show up on a PR.
+          # Flip back to false once review behavior is stable.
+          show_full_output: true
+          # Whitelist the tools needed to submit a PR review:
+          #   - Bash(gh pr review:*): the actual review submission.
+          #     Narrow prefix match; no other gh subcommands are allowed.
+          #   - Write: lets the agent drop the review body into a temp
+          #     file so we can use `gh pr review --body-file` instead
+          #     of inline `--body "..."`. The inline form collides
+          #     with bash quoting whenever the review body contains
+          #     code fences or backticks, and the agent ends up
+          #     retrying with progressively shorter bodies — polluting
+          #     the review history with 4-5 reviews per run. File-
+          #     based submission sidesteps that entirely.
+          #
+          # Reading PR metadata/diff works via the default-allowed
+          # WebFetch tool against the GitHub REST API, so we don't
+          # need to whitelist `gh pr view`.
+          claude_args: --allowedTools "Write,Bash(gh pr review:*)"
+          prompt: |
+            You are reviewing a pull request in the SMILE-factory monorepo.
+
+            The active project is the **delulu Discord orchestrator** under
+            `apps/delulu_discord` (bot, runs in Docker on a VPS) and
+            `apps/delulu_sandbox_modal` (Modal sandbox function that runs
+            Claude Code). The root also contains archived LoRA-Instruct
+            fine-tuning code — lower priority for review unless the PR
+            explicitly touches it.
+
+            Focus your review on, in priority order:
+              1. **Correctness** — actual bugs, broken flows, missing
+                 error handling at system boundaries (Discord gateway,
+                 Modal dispatch, subprocess exec).
+              2. **Security** — credential handling, path traversal in the
+                 attachment-write path, subprocess argument injection,
+                 anything that widens the Modal sandbox's blast radius.
+              3. **Boundary invariants** — the bot must never import from
+                 `delulu_sandbox_modal` (they're deployed separately); the
+                 sandbox must never import bot-side Discord types. Flag any
+                 cross-boundary imports.
+              4. **Deployment impact** — changes under
+                 `apps/delulu_sandbox_modal/` require a Modal redeploy;
+                 changes under `apps/delulu_discord/` require a bot
+                 container rebuild. Flag if the PR description or commit
+                 messages don't mention which side is affected.
+              5. **Test coverage gaps** — note missing tests, but don't
+                 block on them (the project has minimal test infrastructure
+                 today).
+
+            Do **not** comment on:
+              - Style nits that ruff would catch (ruff runs in pre-commit)
+              - Documentation wording unless it's factually wrong
+              - Changes to PRDs under `prd/` — those are planning docs,
+                not production code
+
+            Be concise. Do not manufacture feedback to fill space.
+
+            **Your review is advisory, not blocking.** You have exactly
+            two outcomes to choose from:
+
+            - No substantive issues → `--approve`
+            - Anything else (observations, concerns, questions, bugs
+              you want a human to confirm) → `--comment`
+
+            Do **NOT** use `--request-changes`. A request-changes review
+            gives your individual judgment a hard veto over merges, and
+            you can be wrong. Findings you think are important still go
+            in the `--comment` body — the human reviewer decides whether
+            they block merge. Approve-or-comment is the right shape for
+            an AI code reviewer.
+
+            **Submit exactly ONE PR review at the end of the run.
+            Never retry on apparent failure — one attempt, one
+            outcome.** Duplicate reviews pollute the PR history. The
+            PR number is `${{ github.event.pull_request.number }}`.
+
+            **How to submit** — use the `Write` tool to save your
+            review body to `/tmp/review.md`, then call `gh pr review`
+            with `--body-file`. Do **not** pass the body inline via
+            `--body "..."`: markdown with code fences, backticks, and
+            newlines collides with bash quoting, the first attempt
+            gets mangled, and any retry pollutes the review history.
+
+            - No substantive issues →
+              `gh pr review <N> --approve --body-file /tmp/review.md`
+            - Issues / observations / questions →
+              `gh pr review <N> --comment --body-file /tmp/review.md`
+
+            If `gh pr review --approve` fails with a "cannot approve
+            your own pull request" error, fall back to `--comment`
+            with the same body file (one retry maximum, only for this
+            specific error — never retry for any other reason).
