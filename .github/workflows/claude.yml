@@ -1,0 +1,101 @@
+name: Claude Code
+
+# On-demand Claude: fires when someone mentions `@claude` in a PR
+# comment, inline review comment, review body, or issue. Tag mode is
+# auto-detected from the `@claude` trigger on these events.
+#
+# On an open PR: pushes fix commits directly to the PR branch. Tag
+# mode's own system prompt says "When triggered on an open PR: Always
+# push directly to the existing PR branch" — v1 tag mode does not
+# support nested PRs on open PRs.
+#
+# On an issue: creates a new branch and opens a fresh PR from it.
+# On a closed PR: creates a new branch.
+#
+# The auto-review path (on every pull_request event) lives in
+# claude-code-review.yml — the two workflows have different permissions
+# and trigger surfaces and intentionally do not overlap.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  issues:
+    types: [opened, assigned]
+
+jobs:
+  claude:
+    name: Claude
+    # Fire when @claude is mentioned on any of the supported surfaces,
+    # EXCLUDING mentions made by claude[bot] itself — that prevents
+    # recursive triggers (e.g. if Claude ever posts "@claude look into
+    # this" in a review body, we don't want a loop).
+    if: |
+      (github.event_name == 'issue_comment'
+        && contains(github.event.comment.body, '@claude')
+        && github.event.comment.user.login != 'claude[bot]')
+      || (github.event_name == 'pull_request_review_comment'
+        && contains(github.event.comment.body, '@claude')
+        && github.event.comment.user.login != 'claude[bot]')
+      || (github.event_name == 'pull_request_review'
+        && contains(github.event.review.body, '@claude')
+        && github.event.review.user.login != 'claude[bot]')
+      || (github.event_name == 'issues'
+        && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))
+        && github.event.issue.user.login != 'claude[bot]')
+    runs-on: ubuntu-latest
+    concurrency:
+      # Group by PR/issue number so rapid-fire mentions collapse, but
+      # separate from the review concurrency group so a fresh push
+      # doesn't cancel an in-progress fix run and vice versa.
+      group: claude-tag-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      # `contents: write` lets tag mode push fix commits to PR
+      # branches. Tag mode's built-in gatekeeping only runs this for
+      # actors with repo write access, so a random PR commenter can't
+      # abuse the wider permissions.
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      # Lets the agent read CI logs via `gh run view` when debugging
+      # test failures. Without this `@claude why did CI fail` can't
+      # inspect the actual run output.
+      actions: read
+    steps:
+      # Tag mode's fetcher calls `git hash-object` / `git fetch` to
+      # compute file SHAs and bootstrap the working tree, so the
+      # runner needs an actual git repo on disk. Without this step the
+      # action fails with "fatal: not a git repository" before any
+      # edits happen.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Surface the Actions workflow permissions for actions:read
+          # to the claude-code-action runtime. GitHub's permissions
+          # block above governs the job's GITHUB_TOKEN, but
+          # claude-code-action separately needs to be told which
+          # extra scopes are available when it requests its MCP
+          # tools.
+          additional_permissions: |
+            actions: read
+          # No `claude_args --allowedTools` override here. Tag mode
+          # has its own carefully-designed allowlist that wires up
+          # the internal MCP file-ops tools and a specific
+          # `git-push.sh` wrapper script. Overriding --allowedTools
+          # replaces that list wholesale, which strips tag mode of
+          # the actual tools it uses to edit files and push — the
+          # agent then silently hallucinates "fixed and pushed"
+          # without running any edits. Let tag mode use its native
+          # defaults.
+          #
+          # No `prompt:` either — in tag mode the action uses the
+          # @claude comment/issue body as the instruction.
