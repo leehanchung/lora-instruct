@@ -185,16 +185,16 @@ Three-layer scheme on the Modal Volume:
 
 ### Expected cold-start budget
 
-| Phase | Cold (first thread, repo never seen) | Warm (bare cache exists) | Resumed thread |
-|---|---|---|---|
-| Modal container | 1–5s | 1–5s | 1–5s |
-| Bare clone (`blob:none`) | 2–8s | 0 | 0 |
-| `git fetch` | 0 (fresh) | <1s | 0 |
-| `git worktree add` | 1–3s | 1–3s | 0 (exists) |
-| Claude Code startup | ~1s | ~1s | ~1s |
-| **Total** | **~5–17s** | **~3–9s** | **~2–6s** |
+See the revised budget table in the "Concurrency" section below,
+which includes the `max_containers=1` orchestration hop. Summary:
 
-Warm path is dominated by Modal container spin-up — the right place to be.
+- **Cold** (first thread on this repo, ever): ~6–19s
+- **Warm** (bare cache exists): ~4–11s
+- **Resumed thread**: ~2–6s (skips the provisioning hop entirely
+  via a short-circuit in `run_claude_code`)
+
+Warm and resumed paths are still dominated by Modal container
+spin-up — the right place to be.
 
 ## Files to create / modify
 
@@ -204,39 +204,75 @@ Runs *inside* the Modal sandbox. Pure stdlib + `subprocess`. No structlog
 dependency at module level (the sandbox import path is sensitive — see
 `fix: install structlog in sandbox image` history).
 
+This module exposes a **Modal function**, not a plain Python function.
+The `@app.function(max_containers=1)` decorator is load-bearing — it's
+how we get cross-container serialization of provisioning work after
+the flock scout (see "Concurrency" below) proved that filesystem-based
+locks are a dead end on Modal Volumes.
+
 ```python
 REPO_CACHE_ROOT = "/vol/repo-cache"
 WORKSPACES_ROOT = "/vol/workspaces"
 
+# Dedicated provisioning function. max_containers=1 means Modal
+# serializes all concurrent invocations to a single container,
+# giving us a global mutex on git operations without writing any
+# lock code of our own.
+@app.function(
+    image=provisioner_image,
+    volumes={"/vol": volume},
+    max_containers=1,
+    timeout=300,
+)
 def provision_workspace(
     thread_id: int,
     repo_url: str | None,
     ref: str = "HEAD",
 ) -> str:
-    """Return absolute workspace_path. Idempotent. Raises on unrecoverable failure."""
+    """Return absolute workspace_path. Idempotent. Raises on unrecoverable failure.
+
+    Called from `run_claude_code` via `provision_workspace.remote(...)`.
+    The `.remote()` hop routes through Modal's orchestration layer,
+    which queues the call behind any other in-flight invocation.
+    """
 
 def _bare_cache_path(repo_url: str) -> str:
     """Parse repo_url -> /vol/repo-cache/<host>/<org>/<repo>.git"""
 
 def _ensure_bare_cache(repo_url: str) -> str:
-    """git clone --bare --filter=blob:none if missing. flock-protected."""
+    """git clone --bare --filter=blob:none if missing. No locks needed
+    because we're inside the serialized provision_workspace container."""
 
 def _fetch_bare(bare_path: str, ref: str) -> None:
-    """git -C <bare> fetch --filter=blob:none origin <ref>. flock-protected."""
+    """git -C <bare> fetch --filter=blob:none origin <ref>. No locks needed
+    (see above)."""
 
 def _ensure_worktree(bare_path: str, workspace_path: str, ref: str) -> None:
     """git -C <bare> worktree add --force <workspace_path> <ref>, or checkout
-    if the worktree already exists. flock-protected per workspace."""
+    if the worktree already exists. No locks needed (see above)."""
 
 def _parse_repo_url(repo_url: str) -> tuple[str, str, str]:
     """Return (host, org, repo) for directory layout."""
 ```
 
-**Locking**: `fcntl.flock(LOCK_EX)` on `.provision.lock` files inside the
-bare cache dir and the workspace dir. Two concurrent threads on the same
-repo will serialize cleanly. Verify flock semantics on Modal Volume as
-part of testing — if not honored, fall back to `os.link`-based atomic
-rename locks.
+**No locking code.** Because `provision_workspace` is a Modal function
+with `max_containers=1`, only one invocation runs at any moment across
+the entire Modal app. All git operations inside it are effectively
+single-threaded — there is no second worker to race against. The
+earlier design's `fcntl.flock` on `.provision.lock` files is gone
+entirely. The flock scout at
+`apps/delulu_sandbox_modal/tools/verify_flock.py` documents why
+(filesystem locks don't propagate across Modal containers — neither
+`fcntl.flock`, `os.mkdir` atomic EEXIST, nor `os.link` — the last of
+which Modal Volumes don't even support).
+
+**Commit + reload dance.** After `provision_workspace` finishes its
+git work, it calls `volume.commit()` before returning. The caller
+(`run_claude_code`, in its own container) then calls
+`volume.reload()` to pick up the committed provisioning state before
+cd-ing into the workspace. Without the reload, the calling container
+still has its pre-provision view of the volume mounted and won't see
+the worktree.
 
 **Dead/edge cases** to handle:
 - Workspace exists but isn't a worktree (legacy stub layout): `rm -rf`,
@@ -245,6 +281,10 @@ rename locks.
   worktree and recreating.
 - Running `git -C <bare> worktree prune` on each provision to clean up
   stale registrations cheaply.
+- Resumed-thread short-circuit: if the workspace already exists AND
+  a marker file records the same (repo_url, ref) as the current call,
+  skip the git ops and return the path immediately. Shaves ~1–2s off
+  the warm path.
 
 ### Modify: `apps/delulu_sandbox_modal/src/delulu_sandbox_modal/app.py`
 
@@ -262,12 +302,30 @@ def run_claude_code(
 ) -> str:
 ```
 
-- Drop `workspace_path` from the signature — the sandbox owns provisioning
-  now. Derive via `provision_workspace(thread_id, repo_url, ref)` after
-  credential setup, before the `subprocess.run`.
-- Log `provision.timing` with `cold_clone_ms`, `fetch_ms`, `worktree_ms`,
-  `total_ms` — primary observability for the cold-start work.
-- `volume.commit()` at the end already covers bare cache + worktree state.
+- Drop `workspace_path` from the signature — the sandbox owns
+  provisioning now. Derive via
+  `workspace_path = provision_workspace.remote(thread_id, repo_url, ref)`
+  after credential setup, before the `subprocess.run`.
+- **`.remote()`, not a plain call.** `provision_workspace` is a
+  separate Modal function with `max_containers=1`; calling it via
+  `.remote()` routes through Modal's orchestration layer, which
+  queues behind any other in-flight provisioning. A plain Python
+  call would run inline in the `run_claude_code` container and
+  bypass the serialization — guaranteeing races.
+- **`volume.reload()` after the remote call.** Without this the
+  calling container still has its pre-provisioning view of the
+  volume mounted and won't see the newly-created worktree. The
+  reload is cheap (<0.5s) and picks up the committed state.
+- **Short-circuit for resumed threads.** If `resume=True` AND the
+  workspace directory already exists on the mounted volume, skip
+  the `provision_workspace.remote()` hop entirely — the existing
+  worktree is what we want. Shaves ~1–2s off every resumed turn.
+- Log `provision.timing` with `cold_clone_ms`, `fetch_ms`,
+  `worktree_ms`, `total_ms` — primary observability for the
+  cold-start work.
+- `run_claude_code` itself keeps the default unlimited concurrency
+  — we only serialize the git operations, not the Claude Code
+  execution that takes minutes per call.
 
 ### Modify: `apps/delulu_discord/src/delulu_discord/dispatcher.py`
 
@@ -396,8 +454,12 @@ Add:
 ```python
 repo_cache_root: str = "/vol/repo-cache"
 default_git_ref: str = "HEAD"
-provision_lock_timeout_seconds: int = 60
 ```
+
+(No `provision_lock_timeout_seconds` — the concurrency redesign
+removed filesystem locks entirely. Serialization now lives in
+Modal's orchestration layer via `max_containers=1`, which has its
+own function-level timeout.)
 
 ### Modify: `apps/delulu_discord/src/delulu_discord/streaming.py`
 
@@ -484,33 +546,132 @@ stragglers crept back in.
 
 ## Concurrency
 
-Three race scenarios, all covered by `flock`:
+### What we tried first (and why it didn't work)
 
-1. **Two threads, same repo, cold cache.** Both try to `git clone --bare`.
-   Exclusive lock on
-   `/vol/repo-cache/<host>/<org>/<repo>.git.lock` before the existence
-   check. Loser blocks, then sees the cache and proceeds.
-2. **Two threads, same repo, concurrent fetches.** Same lock held during
-   fetch. Warm fetches are <1s so contention is fine.
-3. **Same-thread concurrent dispatches.** Per-workspace flock at
-   `/vol/workspaces/<thread_id>/.provision.lock`. (The bot should also
-   serialize per-thread dispatches at the session level, but that's a
-   pre-existing concern, not new.)
+The original design serialized provisioning via `fcntl.flock(LOCK_EX)`
+on lock files inside the Modal Volume, with `os.link`-based atomic
+rename locks as a fallback. **Neither works on Modal Volumes**, and we
+have empirical evidence:
+`apps/delulu_sandbox_modal/tools/verify_flock.py` is a one-off scout
+that spawns three concurrent workers and tests three filesystem lock
+primitives in sequence. Results on a real Modal Volume:
 
-Acquire with 60s timeout; surface a clean error on timeout.
+| Primitive | Result | Why |
+|---|---|---|
+| `fcntl.flock(LOCK_EX)` | ❌ **FAIL** | Kernel-level locks don't propagate across Modal containers. Each container has its own kernel and its own inode cache; locking `/vol/foo.lock` in container A doesn't block container B's flock on the same path. |
+| `os.mkdir` atomic EEXIST | ❌ **FAIL** | All three workers successfully created the same directory. The Modal Volume backend doesn't serialize metadata writes across containers — mkdir atomicity is a local-kernel invariant, not a distributed one. |
+| `os.link` atomic rename lock | ⛔ **UNSUPPORTED** | `PermissionError: [Errno 1] Operation not permitted`. The volume filesystem doesn't support hard links at all. The PRD's original fallback path is unusable regardless of atomicity. |
+
+Root cause: **Modal Volumes aren't a live shared kernel filesystem.**
+They're commit/reload-synced object storage. Writes from one container
+are invisible to another until explicit `volume.commit()` +
+`volume.reload()` — which is fundamentally the wrong model for any
+"spin on a lock file" primitive. The PRD's earlier concurrency design
+assumed POSIX semantics that the volume backend doesn't provide.
+
+Re-run the scout at any time to re-verify:
+```
+modal run apps/delulu_sandbox_modal/tools/verify_flock.py::verify
+```
+
+### What we do instead: `max_containers=1` on `provision_workspace`
+
+Serialization lives at **Modal's orchestration layer**, not at the
+filesystem. `provision_workspace` is defined as a Modal function with
+`@app.function(max_containers=1)`. Modal guarantees that at most one
+container running this function exists across the entire app at any
+time. Concurrent `.remote()` calls from multiple `run_claude_code`
+containers get queued by Modal and processed one at a time.
+
+```python
+@app.function(
+    image=provisioner_image,
+    volumes={"/vol": volume},
+    max_containers=1,  # <- the entire concurrency design
+    timeout=300,
+)
+def provision_workspace(thread_id: int, repo_url: str | None, ref: str = "HEAD") -> str:
+    ...
+```
+
+Inside the body there are **no locks**. No `.provision.lock`, no
+`flock`, no retry loops, no timeout math. It's just sequential git
+operations on a freshly-reloaded volume view, followed by
+`volume.commit()` at the end. The earlier designs' ~40 lines of lock
+management code are gone.
+
+### How the race scenarios resolve under the new design
+
+1. **Two threads, same repo, cold cache.** Both trigger
+   `run_claude_code`, both call `provision_workspace.remote(...)`.
+   Modal queues the second call behind the first. The first container
+   does the cold clone, commits the volume, returns. The second
+   container mounts the volume fresh (so it sees the committed bare
+   cache), skips the clone, runs the fetch, returns. No race, no lock
+   code.
+2. **Two threads, same repo, concurrent fetches.** Same shape.
+   Sequential by construction.
+3. **Same-thread concurrent dispatches.** The bot serializes per-thread
+   dispatches at the session level (pre-existing, not new). Even if
+   it didn't, Modal's queueing would handle it — the two calls would
+   serialize and the second would short-circuit on the resumed-thread
+   path.
+
+### Tradeoff worth knowing
+
+`max_containers=1` is a **global** mutex on provisioning, not
+per-repo. If two people in different Discord channels trigger
+provisioning on two different repos at the same time, their
+provisioning requests queue up instead of running in parallel.
+
+For the v1 "single user / single team" scope this is invisible — the
+bot sees provisioning requests arriving seconds or minutes apart, not
+concurrently. For a larger deployment it could add noticeable latency.
+The migration path is to replace `max_containers=1` with a per-repo
+coordination primitive (candidate: `modal.Dict.put(key, value,
+skip_if_exists=True)` as a CAS-based lock registry, keyed by repo
+URL), which would let different repos provision concurrently while
+still serializing same-repo contention. That's explicit v2 work and
+listed in "Out of scope — park for v2."
+
+### Revised cold-start budget
+
+The `max_containers=1` design adds a Modal-orchestration hop
+(`run_claude_code` → `provision_workspace.remote()` → back) and a
+`volume.reload()` to the critical path. Updated numbers:
+
+| Phase | Cold (first thread, repo never seen) | Warm (bare cache exists) | Resumed thread |
+|---|---|---|---|
+| `run_claude_code` container start | 1–5s | 1–5s | 1–5s |
+| `provision_workspace.remote()` hop | 1–2s | 1–2s | skipped |
+| Bare clone (`blob:none`) | 2–8s | 0 | 0 |
+| `git fetch` | 0 (fresh) | <1s | 0 |
+| `git worktree add` | 1–3s | 1–3s | 0 (exists) |
+| `volume.reload()` | <0.5s | <0.5s | 0 |
+| Claude Code startup | ~1s | ~1s | ~1s |
+| **Total** | **~6–19s** | **~4–11s** | **~2–6s** |
+
+Slightly worse than the earlier budget (which assumed inline flock-
+protected provisioning). The extra ~1–2s hop for warm and cold paths
+is acceptable; resumed threads skip the hop entirely via the
+short-circuit in `run_claude_code` (see that file's modification
+note), so the most common path stays fast.
 
 ## Verification
 
-1. **Flock semantics check.** One-off Modal function test that two
-   concurrent `.spawn()` calls serialize on the same lock file. Must
-   pass before shipping — load-bearing assumption of the concurrency
-   design.
+1. **Flock scout — already run, PRD cites the result.** See
+   `apps/delulu_sandbox_modal/tools/verify_flock.py`. Re-run any time
+   to re-verify that filesystem locks still don't work on Modal
+   Volumes. No need to re-run before shipping — the scout is
+   documentation, not a gating check.
 
-2. **Microbenchmark.** `tools/bench_provision.py` (not deployed) invoked
-   via `modal run`, hits `provision_workspace` against three repo sizes
-   (small <10MB, medium ~100MB, large >500MB) in all three path types
-   (cold cache / warm new thread / resumed thread). Capture wall-clock
-   per phase.
+2. **Microbenchmark.** `tools/bench_provision.py` (not deployed)
+   invoked via `modal run`, hits `provision_workspace.remote()`
+   against three repo sizes (small <10MB, medium ~100MB, large
+   >500MB) in all three path types (cold cache / warm new thread /
+   resumed thread). Capture wall-clock per phase. Must run on a
+   separate test volume (not `claude-workspaces`) to avoid polluting
+   the production cache.
 
 3. **End-to-end Discord smoke test**:
    - As a non-admin user, `/setrepo repo:alice/api-service` with an
@@ -565,6 +726,23 @@ All paths are relative to the repo root:
 - Per-user dispatch rate limits (independent of allowlist — someone
   in an allowlisted channel can still spam `@corchestra` and burn
   subscription quota). Revisit if it becomes a real problem.
+- **Per-repo provisioning coordination via `modal.Dict`.** The v1
+  concurrency design uses `@app.function(max_containers=1)` on
+  `provision_workspace` as a global mutex — every provisioning call
+  serializes through one Modal container. That's the right tradeoff
+  for single-team scope (the contention window is small, and the
+  simplicity pays for itself) but doesn't scale gracefully if the
+  bot ever serves a larger population where multiple users
+  concurrently provision different repos. The v2 migration: remove
+  `max_containers=1`, add a `modal.Dict`-backed lock registry keyed
+  by repo URL, acquire the per-repo key via an atomic CAS primitive
+  (candidate API: `modal.Dict.put(key, value, skip_if_exists=True)`
+  — needs verification before committing), and surround the git
+  operations with the per-repo acquire/release. Different repos then
+  provision in parallel; same-repo contention still serializes.
+  Write a second scout (`verify_modal_dict.py`) to empirically
+  confirm Modal Dict CAS semantics work across containers before
+  committing to this design.
 - **Multi-user identity via GitHub App.** The v1 single-PAT model
   works for a solo user or a trusted team. Scaling to N independent
   users — each wanting commits attributed to their own GitHub
