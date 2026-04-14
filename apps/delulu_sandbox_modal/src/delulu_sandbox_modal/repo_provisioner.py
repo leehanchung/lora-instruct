@@ -324,3 +324,236 @@ def _run_git(args: list[str], *, check: bool = True) -> subprocess.CompletedProc
 
 def _elapsed_ms(start: float) -> int:
     return int((time.monotonic() - start) * 1000)
+
+
+# ─────────────────────────────────────────────────────────────────
+# Commit-back: stage, commit, and push pending changes from a
+# per-thread workspace to a `claude/<thread_id>` branch on the
+# upstream repo.
+# ─────────────────────────────────────────────────────────────────
+#
+# Lives here (rather than in a separate module) because it's another
+# pure-git operation on the same workspaces that ``provision_workspace``
+# creates. Same import-isolation rules: no Modal decorators, no bot-
+# side imports. The Modal function wrapper that calls this lives in
+# ``app.py``.
+#
+# Refuse-and-instruct UX: callers are expected to check the
+# ``GITHUB_TOKEN`` env var BEFORE calling ``commit_workspace_changes``.
+# This module doesn't touch the env directly — it just takes the
+# token as a parameter so the function is testable without env
+# munging and the auth check stays at the boundary.
+
+# The branch name we always commit to. One branch per thread, so a
+# user can iterate on the same conceptual "task" across multiple
+# /commit calls and have them stack on the same branch — and the
+# remote PR (if they open one) shows the full history of the
+# thread's changes.
+COMMIT_BRANCH_PREFIX = "claude/"
+
+# The git author identity for bot-made commits. The ACTUAL pusher
+# (visible in GitHub's UI as "pushed by") is whoever owns the PAT
+# stored in the ``github-pat`` Modal secret; this name/email is
+# only what shows up in the commit object's Author/Committer
+# fields and in ``git log``. Defaults to a generic bot identity
+# so commits can be filtered out of git log easily; can be
+# overridden via env vars on the github-pat secret (see README).
+DEFAULT_GIT_AUTHOR_NAME = "Claude Code"
+DEFAULT_GIT_AUTHOR_EMAIL = "claude@bot.local"
+
+
+@dataclass
+class CommitResult:
+    """Result of a /commit operation.
+
+    The ``status`` field is the primary signal the bot side renders
+    into a Discord response; the other fields carry additional
+    context for the success and partial-failure cases.
+    """
+
+    status: str  # "ok" | "no_changes" | "no_workspace" | "push_failed"
+    branch: str | None = None
+    commit_sha: str | None = None
+    pr_compare_url: str | None = None
+    error: str | None = None
+
+
+def commit_workspace_changes(
+    thread_id: int,
+    message: str,
+    github_token: str,
+    *,
+    author_name: str = DEFAULT_GIT_AUTHOR_NAME,
+    author_email: str = DEFAULT_GIT_AUTHOR_EMAIL,
+) -> CommitResult:
+    """Stage, commit, and push pending changes in ``/vol/workspaces/<thread_id>``.
+
+    Idempotent in the no-op sense: if there are no changes, returns
+    ``status="no_changes"`` without making a commit. If there ARE
+    changes, makes one new commit on the ``claude/<thread_id>``
+    branch (creating the branch if missing) and pushes it to
+    ``origin``.
+
+    Auth: ``github_token`` is injected at push time via
+    ``-c http.extraheader``, never persisted to ``.git/config``.
+    The token is shell-escaped and the header is built with
+    ``x-access-token:<token>`` per GitHub's documented PAT-as-
+    HTTP-Basic format.
+
+    Caller must verify ``github_token`` is non-empty BEFORE calling
+    this function — refuse-and-instruct on missing PAT happens at
+    the boundary in ``app.py``, not here.
+    """
+    if not github_token:
+        # Defensive — caller should have refused already, but
+        # guarding here means a programming error never causes a
+        # broken push attempt with empty auth.
+        raise ValueError("github_token must not be empty")
+
+    workspace_path = _workspace_path(thread_id)
+    if not os.path.isdir(workspace_path):
+        return CommitResult(
+            status="no_workspace",
+            error=f"workspace {workspace_path} does not exist (no prior dispatch in this thread?)",
+        )
+
+    # Check for pending changes. ``git status --porcelain`` emits
+    # one line per dirty path (modified, added, deleted, untracked);
+    # empty output means a clean working tree.
+    status_result = _run_git(
+        ["-C", workspace_path, "status", "--porcelain"],
+    )
+    if not status_result.stdout.strip():
+        return CommitResult(status="no_changes")
+
+    branch = f"{COMMIT_BRANCH_PREFIX}{thread_id}"
+
+    # Check out the thread's branch. ``-B`` creates if missing OR
+    # resets to the current HEAD if existing — but we want to PRESERVE
+    # any prior commits on this branch from earlier /commit calls.
+    # So: try `git checkout` first; if that fails (branch doesn't
+    # exist), `git checkout -b` to create.
+    try:
+        _run_git(["-C", workspace_path, "checkout", branch])
+    except RuntimeError:
+        _run_git(["-C", workspace_path, "checkout", "-b", branch])
+
+    # Stage everything and commit with the bot's git identity.
+    # ``-c user.name=...`` is per-command, not persisted to config.
+    _run_git(["-C", workspace_path, "add", "-A"])
+    _run_git(
+        [
+            "-c",
+            f"user.name={author_name}",
+            "-c",
+            f"user.email={author_email}",
+            "-C",
+            workspace_path,
+            "commit",
+            "-m",
+            message,
+        ]
+    )
+
+    # Capture the new commit SHA for the response.
+    sha_result = _run_git(["-C", workspace_path, "rev-parse", "HEAD"])
+    commit_sha = sha_result.stdout.strip()
+
+    # Push via PAT-as-Basic-Auth header. This is how GitHub
+    # documents PAT auth over HTTPS. The header lives only on the
+    # one git invocation — never written to .git/config, never
+    # logged.
+    auth_header = _build_auth_header(github_token)
+    try:
+        _run_git(
+            [
+                "-c",
+                f"http.extraheader={auth_header}",
+                "-C",
+                workspace_path,
+                "push",
+                "origin",
+                branch,
+            ]
+        )
+    except RuntimeError as exc:
+        # Push failed — most commonly an invalid/expired PAT (401)
+        # or insufficient scopes. The local commit DID land on the
+        # workspace's branch, so the user can re-run /commit after
+        # rotating the PAT and the next push will catch up. Surface
+        # the git error to the bot so the user sees actionable
+        # detail instead of a generic "push failed."
+        return CommitResult(
+            status="push_failed",
+            branch=branch,
+            commit_sha=commit_sha,
+            error=str(exc),
+        )
+
+    pr_compare_url = _build_pr_compare_url(workspace_path, branch)
+
+    return CommitResult(
+        status="ok",
+        branch=branch,
+        commit_sha=commit_sha,
+        pr_compare_url=pr_compare_url,
+    )
+
+
+def _build_auth_header(github_token: str) -> str:
+    """Build the ``Authorization: Basic ...`` header for a GitHub PAT.
+
+    GitHub's documented format is ``x-access-token:<pat>``,
+    base64-encoded. Using ``x-access-token`` as the username is
+    the convention — anything works as the username, but
+    ``x-access-token`` is what GitHub's own docs and CLI use.
+    """
+    import base64
+
+    raw = f"x-access-token:{github_token}".encode()
+    encoded = base64.b64encode(raw).decode("ascii")
+    return f"Authorization: Basic {encoded}"
+
+
+def _build_pr_compare_url(workspace_path: str, branch: str) -> str | None:
+    """Build a ``github.com/<owner>/<repo>/compare/<base>...<branch>`` link.
+
+    Returns ``None`` if we can't extract the upstream URL or the
+    base ref — display code degrades to "branch pushed, open a PR
+    yourself" rather than crashing.
+    """
+    try:
+        # Get the origin URL.
+        origin_result = _run_git(
+            ["-C", workspace_path, "config", "--get", "remote.origin.url"],
+        )
+        origin_url = origin_result.stdout.strip()
+        if not origin_url:
+            return None
+
+        # Parse owner/repo out of the origin URL (same logic as the
+        # bot side's _short_repo_name in streaming.py, kept inline
+        # to avoid cross-app imports).
+        host, org, repo = _parse_repo_url(origin_url)
+        if host != "github.com":
+            # Compare URLs only documented for github.com; skip for
+            # other hosts.
+            return None
+
+        # Determine the base branch. The worktree was created from a
+        # specific ref; we want to compare against that. Read the
+        # ref from the .provision.json marker if present.
+        marker_path = os.path.join(workspace_path, PROVISION_MARKER_NAME)
+        base_ref = "main"
+        if os.path.isfile(marker_path):
+            try:
+                with open(marker_path) as f:
+                    base_ref = json.load(f).get("ref") or "main"
+            except (OSError, json.JSONDecodeError):
+                pass
+        if base_ref == "HEAD":
+            base_ref = "main"  # GitHub doesn't accept HEAD in compare URLs
+
+        return f"https://github.com/{org}/{repo}/compare/{base_ref}...{branch}?expand=1"
+    except (RuntimeError, ValueError):
+        return None

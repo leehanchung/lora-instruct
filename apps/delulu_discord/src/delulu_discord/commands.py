@@ -49,8 +49,10 @@ import structlog
 from discord import app_commands
 
 if TYPE_CHECKING:
+    from delulu_discord.dispatcher import SandboxDispatcher
     from delulu_discord.repo_allowlist import RepoAllowlist
     from delulu_discord.repo_config import RepoConfig
+    from delulu_discord.session_manager import SessionManager
 
 logger = structlog.get_logger()
 
@@ -74,15 +76,23 @@ def register_slash_commands(
     *,
     repo_config: RepoConfig,
     repo_allowlist: RepoAllowlist,
+    session_manager: SessionManager,
+    dispatcher: SandboxDispatcher,
 ) -> None:
     """Register all repo-related slash commands on the given tree.
 
     Called once at bot startup from ``main.create_bot``. After this
     returns the ``CommandTree`` has the commands defined; the
     ``on_ready`` handler is responsible for calling ``tree.sync()``
-    to push them to Discord. Closures over ``repo_config`` and
-    ``repo_allowlist`` keep each command body self-contained without
-    needing a holder class.
+    to push them to Discord. Closures over the data store deps
+    (``repo_config``, ``repo_allowlist``) and the bot-state deps
+    (``session_manager``, ``dispatcher``) keep each command body
+    self-contained without needing a holder class.
+
+    The ``session_manager`` and ``dispatcher`` deps are only used
+    by ``/commit``, which needs to look up the current thread's
+    session (for ``thread_id`` and the implicit repo binding) and
+    then dispatch the commit to the sandbox.
     """
 
     # ── /setrepo ────────────────────────────────────────────
@@ -288,7 +298,71 @@ def register_slash_commands(
             ephemeral=True,
         )
 
-    logger.info("commands.registered", count=5)
+    # ── /commit ─────────────────────────────────────────────
+    @tree.command(
+        name="commit",
+        description="Commit and push the current thread's workspace changes",
+    )
+    @app_commands.describe(message="Commit message")
+    async def commit(interaction: discord.Interaction, message: str) -> None:
+        # /commit only makes sense inside a Claude Code thread —
+        # the workspace it operates on is the per-thread one.
+        if not isinstance(interaction.channel, discord.Thread):
+            await interaction.response.send_message(
+                "❌ `/commit` must be run inside a Claude Code thread.",
+                ephemeral=True,
+            )
+            return
+
+        # The session must exist (so we know there's a workspace
+        # this thread is bound to) and must have a repo binding
+        # (so there's something meaningful to commit and push).
+        session = session_manager.get_session(interaction.channel.id)
+        if session is None:
+            await interaction.response.send_message(
+                "❌ No active session in this thread. Mention `@claude` first to create one.",
+                ephemeral=True,
+            )
+            return
+        if session.repo_url is None:
+            await interaction.response.send_message(
+                "❌ This thread has no repo binding — there's nothing to push to. "
+                "Use `/setrepo` in the parent channel to bind a repo, then start "
+                "a fresh `@claude` thread against it.",
+                ephemeral=True,
+            )
+            return
+
+        # Strip a trailing whitespace-only message defensively;
+        # discord.py allows zero-length strings through and git
+        # commit -m "" creates an empty-message commit which is
+        # confusing in git log.
+        message = message.strip()
+        if not message:
+            await interaction.response.send_message(
+                "❌ Commit message can't be empty.",
+                ephemeral=True,
+            )
+            return
+
+        # Defer — the sandbox roundtrip + git push can take 5–10s.
+        await interaction.response.defer(thinking=True)
+
+        try:
+            result = await dispatcher.commit_workspace(
+                thread_id=session.thread_id,
+                message=message,
+            )
+        except Exception as exc:
+            logger.exception("commit.dispatch_failed", thread_id=session.thread_id)
+            await interaction.followup.send(
+                f"⚠️ /commit dispatch failed: `{type(exc).__name__}: {exc}`"
+            )
+            return
+
+        await _render_commit_result(interaction, result)
+
+    logger.info("commands.registered", count=6)
 
 
 def _build_autocomplete_choices(
@@ -304,6 +378,82 @@ def _build_autocomplete_choices(
     needle = current.lower()
     matches = [r for r in items if needle in r.lower()]
     return [app_commands.Choice(name=r, value=r) for r in matches[:AUTOCOMPLETE_CHOICE_LIMIT]]
+
+
+async def _render_commit_result(
+    interaction: discord.Interaction,
+    result: dict,
+) -> None:
+    """Translate a sandbox-side commit_workspace result dict into a Discord followup.
+
+    The result shape is documented on
+    ``delulu_sandbox_modal.app.commit_workspace`` — five possible
+    ``status`` values, each with its own user-facing rendering.
+    Kept as a free function (not a method) because it has no
+    state of its own and lives next to the slash command for
+    readability.
+    """
+    status = result.get("status")
+
+    if status == "ok":
+        branch = result.get("branch", "claude/<thread>")
+        commit_sha = (result.get("commit_sha") or "")[:7]
+        pr_url = result.get("pr_compare_url")
+        body = f"✅ Committed `{commit_sha}` and pushed to branch `{branch}`."
+        if pr_url:
+            body += f"\n\nOpen a PR: {pr_url}"
+        await interaction.followup.send(body)
+        return
+
+    if status == "no_pat":
+        # Refuse-and-instruct, exactly as decided in the PRD.
+        await interaction.followup.send(
+            "❌ Can't commit — `github-pat` Modal secret missing or empty.\n\n"
+            "Run on your laptop:\n"
+            "```\nmodal secret create github-pat GITHUB_TOKEN=<your-pat>\n```\n"
+            "Then re-run `/commit`. Your workspace changes are still there."
+        )
+        return
+
+    if status == "no_changes":
+        await interaction.followup.send(
+            "ℹ️ Nothing to commit — the workspace has no pending changes."
+        )
+        return
+
+    if status == "no_workspace":
+        # Edge case: session exists but the per-thread workspace
+        # was never materialized (e.g. session created but no
+        # @claude dispatch followed). Tell the user to run a
+        # dispatch first.
+        error = result.get("error", "workspace not found")
+        await interaction.followup.send(
+            f"❌ No workspace for this thread — `{error}`.\n\n"
+            "Mention `@claude` in the thread first to materialize the workspace, "
+            "then re-run `/commit`."
+        )
+        return
+
+    if status == "push_failed":
+        # Local commit landed but push failed — most likely an
+        # invalid PAT (401) or insufficient scopes. The local
+        # commit is preserved on the workspace branch, so a
+        # subsequent /commit after rotating the PAT will catch
+        # everything up.
+        branch = result.get("branch", "claude/<thread>")
+        commit_sha = (result.get("commit_sha") or "")[:7]
+        error = result.get("error", "unknown push error")
+        await interaction.followup.send(
+            f"⚠️ Local commit `{commit_sha}` landed on `{branch}` but push failed.\n\n"
+            f"Git error: ```\n{error}\n```\n"
+            "Most likely the PAT is invalid or lacks `contents: write` on this repo. "
+            "Rotate the secret and re-run `/commit` — the queued commit will push too."
+        )
+        return
+
+    # Defensive: any unrecognized status. Better to surface "unexpected"
+    # than to silently succeed.
+    await interaction.followup.send(f"⚠️ Unexpected /commit result: `{result}`")
 
 
 async def _validate_github_public_repo(owner_repo: str) -> tuple[bool, str]:

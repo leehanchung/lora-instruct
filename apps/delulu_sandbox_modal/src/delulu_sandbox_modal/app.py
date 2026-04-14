@@ -65,6 +65,29 @@ sandbox_image = (
 #     CLAUDE_CREDENTIALS_JSON="$(cat ~/.claude/.credentials.json)"
 claude_oauth_secret = modal.Secret.from_name("claude-oauth")
 
+# GitHub PAT for /commit push-back. The secret MUST exist for the
+# Modal app to deploy — Modal's `Secret.from_name` doesn't have an
+# optionality flag. To set up:
+#
+#     modal secret create github-pat GITHUB_TOKEN=ghp_xxxxxx
+#
+# The token can be a placeholder if /commit isn't going to be used
+# yet (e.g. `GITHUB_TOKEN=placeholder`); the runtime check in
+# `commit_workspace` will refuse-and-instruct when the value is
+# empty or doesn't look like a real PAT, leaving the workspace
+# untouched. Replace with a real fine-grained PAT scoped to the
+# repos in the allowlist when ready to enable push.
+#
+# Optional override env vars on the same secret control the git
+# author identity used for bot commits (defaults: "Claude Code"
+# / "claude@bot.local"):
+#
+#     modal secret create github-pat \
+#         GITHUB_TOKEN=ghp_xxxxxx \
+#         GIT_AUTHOR_NAME="Han Lee" \
+#         GIT_AUTHOR_EMAIL="han@example.com"
+github_pat_secret = modal.Secret.from_name("github-pat")
+
 
 # ── Stream-json helpers (module-level for testability) ───────
 # These parse Claude Code's ``--output-format stream-json`` lines into the
@@ -237,6 +260,107 @@ def provision_workspace(
     # can `volume.reload()` and see the fresh worktree + bare cache.
     volume.commit()
     return workspace_path
+
+
+# ── Commit-back Modal Function ───────────────────────────────
+# Dedicated function for /commit. Stages, commits, and pushes the
+# pending changes in a thread's workspace to a `claude/<thread_id>`
+# branch on the upstream repo.
+#
+# Same `provisioner_image` as `provision_workspace` — we only need
+# git, not Claude Code or nodejs. NOT decorated with
+# `max_containers=1`: each /commit invocation operates on a
+# distinct per-thread workspace, so there's no cross-call contention
+# and the Modal hop overhead is wasted. (Same-thread races are
+# avoided at the bot level — Discord serializes a single user's
+# slash command invocations per channel.)
+@app.function(
+    image=provisioner_image,
+    volumes={"/vol": volume},
+    secrets=[github_pat_secret],
+    timeout=120,
+)
+def commit_workspace(thread_id: int, message: str) -> dict[str, Any]:
+    """Stage, commit, and push pending changes in the thread's workspace.
+
+    Pre-flight check: refuses with ``status="no_pat"`` if the
+    ``GITHUB_TOKEN`` env var (from the github-pat secret) is empty
+    or missing. **No local commit is made in that case** — refuse-
+    and-instruct semantics, decided in
+    ``prd/repo-provisioning.md``'s "Commit-back flow" section.
+
+    Returns a dict (not a dataclass — Modal needs JSON-serializable
+    return values) with one of these shapes:
+
+        {"status": "ok", "branch": ..., "commit_sha": ...,
+         "pr_compare_url": ...}
+        {"status": "no_pat"}
+        {"status": "no_workspace", "error": "..."}
+        {"status": "no_changes"}
+        {"status": "push_failed", "branch": ..., "commit_sha": ...,
+         "error": "..."}
+    """
+    import os
+
+    # Lazy import — same rationale as in `provision_workspace`.
+    from delulu_sandbox_modal import repo_provisioner
+
+    # Pre-flight: refuse-and-instruct on missing PAT. Empty-string
+    # is the documented "secret exists but value is a placeholder"
+    # state — we treat it as missing.
+    github_token = (os.environ.get("GITHUB_TOKEN") or "").strip()
+    if not github_token or github_token == "placeholder":
+        logger.info(
+            "commit.refused_no_pat",
+            thread_id=thread_id,
+        )
+        return {"status": "no_pat"}
+
+    # Optional author identity overrides — see the secret comment
+    # at the top of this file.
+    author_name = os.environ.get("GIT_AUTHOR_NAME") or repo_provisioner.DEFAULT_GIT_AUTHOR_NAME
+    author_email = os.environ.get("GIT_AUTHOR_EMAIL") or repo_provisioner.DEFAULT_GIT_AUTHOR_EMAIL
+
+    # The workspace must be loaded from the most recently committed
+    # state of the volume — `provision_workspace` (or any concurrent
+    # /commit on this same thread, though that's prevented by
+    # bot-side serialization) might have changed it since this
+    # container started.
+    volume.reload()
+
+    result = repo_provisioner.commit_workspace_changes(
+        thread_id=thread_id,
+        message=message,
+        github_token=github_token,
+        author_name=author_name,
+        author_email=author_email,
+    )
+
+    logger.info(
+        "commit.result",
+        thread_id=thread_id,
+        status=result.status,
+        branch=result.branch,
+        commit_sha=result.commit_sha,
+        error=result.error,
+    )
+
+    # Commit the volume so the new commit on the local branch is
+    # persisted across container restarts (in case the user runs
+    # /commit again later from a fresh container).
+    volume.commit()
+
+    # Convert to a plain dict for Modal serialization. dataclass
+    # instances aren't auto-serializable across the Modal RPC
+    # boundary in all versions — using a dict is the safe lowest-
+    # common-denominator.
+    return {
+        "status": result.status,
+        "branch": result.branch,
+        "commit_sha": result.commit_sha,
+        "pr_compare_url": result.pr_compare_url,
+        "error": result.error,
+    }
 
 
 # ── Modal Function (runs inside the sandbox) ─────────────────
