@@ -211,7 +211,7 @@ def run_claude_code(
         att_dir = os.path.join(workspace_path, "_attachments", bucket)
         os.makedirs(att_dir, exist_ok=True)
         for raw_name, data in attachments:
-            safe = re.sub(r"[^A-Za-z0-9._-]", "_", raw_name) or "file"
+            safe = re.sub(r"[^A-Za-z0-9._-]", "_", raw_name).strip(".") or "file"
             path = os.path.join(att_dir, safe)
             with open(path, "wb") as f:
                 f.write(data)
