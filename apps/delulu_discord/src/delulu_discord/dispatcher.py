@@ -10,8 +10,8 @@ Modal; it only dispatches to a Modal App that was deployed from the sibling
 
 from __future__ import annotations
 
-import asyncio
-from typing import TYPE_CHECKING
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, Any
 
 import modal
 import structlog
@@ -43,15 +43,19 @@ class SandboxDispatcher:
         resume: bool = False,
         attachments: list[tuple[str, bytes]] | None = None,
         message_id: int | None = None,
-    ) -> str:
-        """Dispatch a task to Modal and return the output.
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Dispatch a task to Modal and stream events as they arrive.
 
-        The Modal function is now a generator that yields event dicts —
-        this method collects the stream, finds the terminal
-        ``done`` / ``error`` event, and returns the final text as a
-        plain string so the rest of the bot keeps its current shape.
-        The async-generator driver that actually streams events to
-        Discord will replace this in a follow-up commit.
+        This is an **async generator**: callers iterate with
+        ``async for event in dispatcher.run_task(...)``. Each event is a
+        plain dict matching one of the shapes declared in
+        ``delulu_sandbox_modal.events`` (the bot cannot import the
+        TypedDicts across the app boundary, so they're typed as
+        ``dict[str, Any]`` here). The terminal event is ``done`` on a
+        clean run or ``error`` on a nonzero Claude Code exit.
+
+        Uses Modal's ``.remote_gen.aio`` so the stream is consumed
+        directly on the event loop — no ``run_in_executor`` dance.
         """
         logger.info(
             "dispatch.start",
@@ -60,63 +64,20 @@ class SandboxDispatcher:
             attachment_count=len(attachments) if attachments else 0,
         )
 
-        # .remote_gen() is a synchronous iterator — drain it in an executor
-        # so the bot's event loop stays responsive.
-        loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            None,
-            lambda: self._collect_events(
-                session_id=session_id,
-                workspace_path=workspace_path,
-                prompt=prompt,
-                resume=resume,
-                attachments=attachments or [],
-                message_id=message_id,
-            ),
-        )
-
-        logger.info(
-            "dispatch.complete",
-            session_id=session_id,
-            output_length=len(result),
-        )
-        return result
-
-    def _collect_events(
-        self,
-        *,
-        session_id: str,
-        workspace_path: str,
-        prompt: str,
-        resume: bool,
-        attachments: list[tuple[str, bytes]],
-        message_id: int | None,
-    ) -> str:
-        """Drain the Modal generator and return the final text.
-
-        On an ``error`` event this appends the error message to whatever
-        partial text was produced, mirroring the old ``run_claude_code``
-        behaviour of tacking ``[stderr]`` onto nonzero-exit output.
-        """
-        final_text = ""
-        error_message: str | None = None
-        for event in self._fn.remote_gen(
+        event_count = 0
+        async for event in self._fn.remote_gen.aio(
             session_id=session_id,
             workspace_path=workspace_path,
             prompt=prompt,
             resume=resume,
-            attachments=attachments,
+            attachments=attachments or [],
             message_id=message_id,
         ):
-            etype = event.get("type") if isinstance(event, dict) else None
-            if etype == "done":
-                final_text = event.get("final_text") or final_text
-            elif etype == "error":
-                error_message = event.get("message") or "unknown error"
-        if error_message:
-            return (
-                f"{final_text}\n\n[error]\n{error_message}".strip()
-                if final_text
-                else f"[error] {error_message}"
-            )
-        return final_text
+            event_count += 1
+            yield event
+
+        logger.info(
+            "dispatch.complete",
+            session_id=session_id,
+            event_count=event_count,
+        )
