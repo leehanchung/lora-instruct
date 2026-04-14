@@ -22,3 +22,12 @@ class Settings(BaseSettings):
     # ── Session behavior ─────────────────────────────────────
     session_ttl_seconds: int = 3600  # 1 hour before session resets
     max_output_length: int = 1900  # Discord limit minus some margin
+
+    # ── Repo provisioning ────────────────────────────────────
+    # The bare-cache root on the Modal Volume. Mirrors the constant
+    # in delulu_sandbox_modal.repo_provisioner; the bot doesn't read
+    # the volume directly but the value is exposed here so admin
+    # commands and observability code have one source of truth.
+    repo_cache_root: str = "/vol/repo-cache"
+    # Default git ref for /setrepo when the user doesn't pass one.
+    default_git_ref: str = "HEAD"

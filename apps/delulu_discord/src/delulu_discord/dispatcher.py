@@ -37,9 +37,11 @@ class SandboxDispatcher:
     async def run_task(
         self,
         session_id: str,
-        workspace_path: str,
+        thread_id: int,
         prompt: str,
         *,
+        repo_url: str | None = None,
+        ref: str = "HEAD",
         resume: bool = False,
         attachments: list[tuple[str, bytes]] | None = None,
         message_id: int | None = None,
@@ -54,12 +56,22 @@ class SandboxDispatcher:
         ``dict[str, Any]`` here). The terminal event is ``done`` on a
         clean run or ``error`` on a nonzero Claude Code exit.
 
+        Workspace derivation moved to the sandbox side in Phase 1 of
+        the repo-provisioning rollout. The bot now passes
+        ``thread_id`` (always) and optionally ``repo_url`` / ``ref``;
+        the sandbox's ``provision_workspace`` Modal function (or its
+        no-repo fast path) materializes the workspace and the run
+        proceeds against it.
+
         Uses Modal's ``.remote_gen.aio`` so the stream is consumed
         directly on the event loop — no ``run_in_executor`` dance.
         """
         logger.info(
             "dispatch.start",
             session_id=session_id,
+            thread_id=thread_id,
+            repo_url=repo_url,
+            ref=ref,
             resume=resume,
             attachment_count=len(attachments) if attachments else 0,
         )
@@ -67,8 +79,10 @@ class SandboxDispatcher:
         event_count = 0
         async for event in self._fn.remote_gen.aio(
             session_id=session_id,
-            workspace_path=workspace_path,
             prompt=prompt,
+            thread_id=thread_id,
+            repo_url=repo_url,
+            ref=ref,
             resume=resume,
             attachments=attachments or [],
             message_id=message_id,
