@@ -61,6 +61,8 @@ def create_bot(settings: Settings) -> discord.Client:
         tree,
         repo_config=repo_config,
         repo_allowlist=repo_allowlist,
+        session_manager=session_manager,
+        dispatcher=dispatcher,
     )
 
     # ── Event handlers ───────────────────────────────────────

@@ -122,3 +122,66 @@ class TestParseRepoUrl:
     def test_https_dotdot_in_repo_rejected(self):
         with pytest.raises(ValueError, match="unsafe repo"):
             _parse_repo_url("https://github.com/alice/../../etc")
+
+
+class TestBuildAuthHeader:
+    """The PAT-as-Basic-Auth header used for /commit pushes."""
+
+    def test_builds_basic_auth_header_with_x_access_token_user(self):
+        from delulu_sandbox_modal.repo_provisioner import _build_auth_header
+
+        header = _build_auth_header("ghp_abcdef123456")
+        # Basic auth = base64("x-access-token:ghp_abcdef123456")
+        assert header.startswith("Authorization: Basic ")
+        encoded = header[len("Authorization: Basic ") :]
+        import base64
+
+        decoded = base64.b64decode(encoded).decode()
+        assert decoded == "x-access-token:ghp_abcdef123456"
+
+    def test_handles_special_characters_in_token(self):
+        from delulu_sandbox_modal.repo_provisioner import _build_auth_header
+
+        # Fine-grained PAT format includes underscores and longer
+        # length; should encode fine.
+        token = "github_pat_11ABCDEFG_xyz123"
+        header = _build_auth_header(token)
+        import base64
+
+        decoded = base64.b64decode(header[len("Authorization: Basic ") :]).decode()
+        assert decoded == f"x-access-token:{token}"
+
+
+class TestCommitWorkspaceChanges:
+    """Pre-flight checks on commit_workspace_changes.
+
+    The full git path is integration-tested by hand against a real
+    Modal deploy — the unit test surface is limited to the
+    parameter validation branches that don't shell out to git.
+    """
+
+    def test_empty_token_raises_value_error(self):
+        from delulu_sandbox_modal.repo_provisioner import commit_workspace_changes
+
+        # Defensive check inside the function — caller is supposed
+        # to have refused on empty PAT before calling, but we
+        # belt-and-suspender it.
+        with pytest.raises(ValueError, match="github_token must not be empty"):
+            commit_workspace_changes(thread_id=42, message="test", github_token="")
+
+    def test_no_workspace_returns_status(self, tmp_path, monkeypatch):
+        """If the workspace dir doesn't exist, return no_workspace cleanly."""
+        from delulu_sandbox_modal import repo_provisioner
+
+        # Point WORKSPACES_ROOT at a tmpdir that has no thread
+        # subdirs — commit_workspace_changes should detect the
+        # missing dir and return a status, not raise.
+        monkeypatch.setattr(repo_provisioner, "WORKSPACES_ROOT", str(tmp_path))
+
+        result = repo_provisioner.commit_workspace_changes(
+            thread_id=999,
+            message="test",
+            github_token="ghp_dummy",
+        )
+        assert result.status == "no_workspace"
+        assert "999" in (result.error or "")

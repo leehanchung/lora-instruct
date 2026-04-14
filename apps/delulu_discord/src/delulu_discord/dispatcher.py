@@ -33,6 +33,14 @@ class SandboxDispatcher:
             settings.modal_app_name,
             "run_claude_code",
         )
+        # Separate handle for the /commit Modal function. Distinct
+        # from `_fn` because they have different signatures and
+        # different return shapes (run_claude_code is a generator
+        # of events; commit_workspace is a single dict).
+        self._commit_fn = modal.Function.from_name(
+            settings.modal_app_name,
+            "commit_workspace",
+        )
 
     async def run_task(
         self,
@@ -95,3 +103,34 @@ class SandboxDispatcher:
             session_id=session_id,
             event_count=event_count,
         )
+
+    async def commit_workspace(
+        self,
+        thread_id: int,
+        message: str,
+    ) -> dict[str, Any]:
+        """Dispatch /commit to the sandbox's `commit_workspace` Modal function.
+
+        Returns the function's result dict — see
+        ``delulu_sandbox_modal.app.commit_workspace`` for the
+        possible shapes (``status="ok" | "no_pat" | "no_workspace"
+        | "no_changes" | "push_failed"``).
+
+        The bot side is responsible for pre-checking that there's
+        an active session with a repo binding before calling this;
+        the sandbox doesn't have visibility into Discord-side
+        session state and would just return ``no_workspace`` for a
+        thread with no prior dispatch.
+        """
+        logger.info("commit.dispatch", thread_id=thread_id)
+        result: dict[str, Any] = await self._commit_fn.remote.aio(
+            thread_id=thread_id,
+            message=message,
+        )
+        logger.info(
+            "commit.complete",
+            thread_id=thread_id,
+            status=result.get("status"),
+            branch=result.get("branch"),
+        )
+        return result
