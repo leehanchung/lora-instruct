@@ -181,6 +181,13 @@ def _parse_repo_url(repo_url: str) -> tuple[str, str, str]:
     if len(parts) < 2 or not parts[0] or not parts[1]:
         raise ValueError(f"cannot parse owner/repo from {repo_url!r}")
 
+    # Guard against path-traversal in any component used to build the
+    # on-disk cache path.  A URL like ``git@../../etc:alice/repo`` would
+    # otherwise resolve outside the volume entirely.
+    for label, value in (("host", host), ("org", parts[0]), ("repo", parts[1])):
+        if ".." in value or "/" in value:
+            raise ValueError(f"unsafe {label} component {value!r} in {repo_url!r}")
+
     return host, parts[0], parts[1]
 
 

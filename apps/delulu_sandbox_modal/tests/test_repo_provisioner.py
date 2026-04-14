@@ -104,3 +104,21 @@ class TestParseRepoUrl:
     def test_ssh_without_colon_rejected(self):
         with pytest.raises(ValueError, match="SSH git URL"):
             _parse_repo_url("git@github.com/alice/api-service")
+
+    # --- path-traversal guard ---
+
+    def test_ssh_dotdot_in_host_rejected(self):
+        with pytest.raises(ValueError, match="unsafe host"):
+            _parse_repo_url("git@../../etc:alice/repo")
+
+    def test_https_dotdot_in_host_rejected(self):
+        with pytest.raises(ValueError, match="unsafe host"):
+            _parse_repo_url("https://../../:80/alice/repo")
+
+    def test_https_dotdot_in_org_rejected(self):
+        with pytest.raises(ValueError, match="unsafe org"):
+            _parse_repo_url("https://github.com/../etc/repo")
+
+    def test_https_dotdot_in_repo_rejected(self):
+        with pytest.raises(ValueError, match="unsafe repo"):
+            _parse_repo_url("https://github.com/alice/../../etc")
