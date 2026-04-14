@@ -252,8 +252,8 @@ driven by path filters.
 - **PR** — `refactor: group delulu apps under apps/delulu/`
   - `git mv apps/delulu_discord apps/delulu/discord`
   - `git mv apps/delulu_sandbox_modal apps/delulu/sandbox_modal`
-  - Update `.github/workflows/discord-orchestrator-deploy.yml` path
-    filters (`apps/delulu_*/**` → `apps/delulu/**`).
+  - Update `.github/workflows/delulu-deploy.yaml` path filters
+    (`apps/delulu_*/**` → `apps/delulu/**`).
   - Update `.github/workflows/claude-review.yml` prompt — it mentions
     `apps/delulu_discord` and `apps/delulu_sandbox_modal` in two places.
   - Update the droplet deploy path in README / workflow
@@ -265,9 +265,9 @@ driven by path filters.
   - Update the top-level dispatching `Makefile`.
 
 - **Verification:** open a trivial PR that touches
-  `apps/delulu/discord/README.md` and confirm
-  `discord-orchestrator deploy` picks up the change via the new path
-  filter before merging the reorg PR itself.
+  `apps/delulu/discord/README.md` and confirm the `delulu` workflow
+  picks up the change via the new path filter before merging the
+  reorg PR itself.
 
 ### Wave 7 — per-project CLAUDE.md + root cleanup
 
@@ -299,11 +299,11 @@ immediately — they don't depend on any open question.
 ## Risks and mitigations
 
 - **Deploy breakage in Wave 6.** Path filters in
-  `discord-orchestrator-deploy.yml` drive bot redeploys. If the filter
-  doesn't match the new paths, either (a) no deploy fires on bot
-  changes and the droplet drifts, or (b) every unrelated change fires
-  a deploy. Mitigation: test the filter on a trivial PR on a branch
-  before merging the reorg PR. Verification step is listed above.
+  `delulu-deploy.yaml` drive bot redeploys. If the filter doesn't
+  match the new paths, either (a) no deploy fires on bot changes and
+  the droplet drifts, or (b) every unrelated change fires a deploy.
+  Mitigation: test the filter on a trivial PR on a branch before
+  merging the reorg PR. Verification step is listed above.
 - **Import rewrites in Wave 3.** LoRA code has `from utils.X` and
   `from templates.X` imports that assume root-level packages. Moving
   them under `projects/lora_instruct/` requires either declaring a

@@ -2,12 +2,12 @@
 
 This repository hosts two projects:
 
-- **[Delulu Discord Orchestrator](#discord-orchestrator)** *(active)* — a Discord bot that dispatches Claude Code tasks to ephemeral Modal sandboxes. Lives under `apps/delulu_discord` and `apps/delulu_sandbox_modal`.
+- **[Delulu](#delulu)** *(active)* — a Discord bot that dispatches Claude Code tasks to ephemeral Modal sandboxes. Lives under `apps/delulu_discord` and `apps/delulu_sandbox_modal`.
 - **[LoRA-Instruct](#lora-instruct-archived)** *(archived)* — earlier fine-tuning work with HuggingFace PEFT + LoRA, kept in-tree pending a later migration. Lives at the repo root (`finetune.py`, `dataset/`, `inference/`, etc.).
 
 ---
 
-# Discord Orchestrator
+# Delulu
 
 Discord bot that dispatches Claude Code tasks to ephemeral Modal Sandboxes.
 
@@ -345,17 +345,39 @@ available targets.
 ## CI/CD (GitHub Actions)
 
 The workflow at
-[`.github/workflows/discord-orchestrator-deploy.yml`](.github/workflows/discord-orchestrator-deploy.yml)
-deploys on every push to `main` that touches `apps/**` or the top-level
-`Makefile`.
+[`.github/workflows/delulu-deploy.yaml`](.github/workflows/delulu-deploy.yaml)
+handles both continuous integration and continuous deployment in six
+jobs:
 
-It's a single job that SSHes into the droplet and runs the same
-`make` targets you'd run manually: `git pull`, then
-`make -C apps/delulu_discord deploy` (rebuild image + restart
-container), plus `make -C apps/delulu_sandbox_modal sync modal-deploy`
-conditionally when files under `apps/delulu_sandbox_modal/` actually
-changed. No container registry, no image pushes — the droplet is both
-the build and run target.
+- **`pr-title-lint`** — enforces Conventional Commits on PR titles.
+  Since main uses squash-merge with the PR title as the commit subject,
+  this is what keeps main's history conventional — no commit-msg hook
+  required.
+- **`changes`** — a `dorny/paths-filter` job that emits four outputs
+  (`bot` / `bot_runtime` / `sandbox` / `sandbox_runtime`) driving
+  which CI and deploy jobs run. The `_runtime` variants exclude
+  `tests/**` so test-only edits run CI but don't redeploy.
+- **`delulu-discord-ci`** — runs `ruff check`, `ruff format --check`,
+  and `pytest` inside `apps/delulu_discord`. Fires on pull requests
+  and on pushes to main.
+- **`delulu-sandbox-modal-ci`** — same for `apps/delulu_sandbox_modal`.
+  Runs on a separate parallel runner so a failure in one suite doesn't
+  hide regressions in the other.
+- **`delulu-sandbox-modal-deploy`** — runs `uv run modal deploy`
+  directly on the GitHub runner using a dedicated CI-only Modal token
+  (`MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` repo secrets). Gated on
+  sandbox CI passing AND the event not being a `pull_request`.
+- **`delulu-discord-deploy`** — SSHes into the droplet, `git pull`s,
+  and runs `make -C apps/delulu_discord deploy` to rebuild and restart
+  the bot container. Gated on discord CI passing, the sandbox deploy
+  being done or skipped (so a combined sandbox+bot push never restarts
+  the bot against a stale Modal function), and the event not being a
+  `pull_request`.
+
+CI + `pr-title-lint` run on every PR; CD runs only on push to main.
+Modal deploys happen on the GH runner with a dedicated CI-only token,
+not the droplet's runtime token — the droplet's role is now narrowed
+to rebuilding the bot container.
 
 ### One-time droplet prep
 
@@ -366,12 +388,14 @@ above — i.e.:
 - Docker installed
 - `/root/SMILE-factory` checked out (the workflow runs `git pull` inside it)
 - `/root/disco.env` containing `DISCORD_BOT_TOKEN=...`
-- `/root/.modal.toml` as a real file (from `uv run modal token new` on the droplet)
-- `uv` installed and on `$PATH` for the `root` user (needed for the
-  conditional `uv run modal deploy` step)
+- `/root/.modal.toml` as a real file (from `uv run modal token new` on
+  the droplet) — this is the *runtime* token the bot uses to call
+  `Function.from_name(...).remote()`, **not** the deploy token. The
+  deploy token lives in GitHub Actions secrets now, not on the droplet
 
-If you can run the manual deploy from the [Updating manually](#updating-manually)
-section successfully, the workflow will work too — it runs the same commands.
+The droplet no longer needs `uv` installed — `uv run modal deploy`
+runs on the GitHub runner, not the VPS. If you can run `docker` and
+`git pull` as root, the bot-deploy side of the workflow will work.
 
 ### One-time GitHub setup
 
@@ -398,48 +422,80 @@ Add these as **Repository secrets** under **Settings → Secrets and variables
 |---|---|
 | `DROPLET_HOST` | The droplet's public IPv4 address |
 | `DROPLET_SSH_KEY` | Full contents of `~/.ssh/disco_deploy` (including the `-----BEGIN`/`-----END` lines) |
-
-That's it — no Modal tokens or registry secrets needed, because everything
-happens on the droplet which already has its own Modal auth.
+| `MODAL_TOKEN_ID` | From Modal dashboard → Settings → Tokens → **New token**. The `ak-...` value |
+| `MODAL_TOKEN_SECRET` | Same token's `as-...` value. Use a dedicated CI-only token so it can be revoked independently of your dev token |
 
 ### Testing the workflow
 
 The workflow has a `workflow_dispatch` trigger, so you can run it manually
 without pushing a commit:
 
-1. GitHub → **Actions** tab → **discord-orchestrator deploy** →
-   **Run workflow** → pick `main` → **Run workflow**.
-2. Watch the logs in real time. You should see the SSH step print the
-   old/new SHAs, the Modal redeploy (or skip) message, the Docker build,
-   and `Deploy complete`.
+1. GitHub → **Actions** tab → **delulu** → **Run workflow** → pick
+   `main` → **Run workflow**.
+2. Watch the six jobs run in order:
+   - `changes` classifies which files changed
+   - `delulu-discord-ci` and `delulu-sandbox-modal-ci` run in parallel
+     on their own runners
+   - `delulu-sandbox-modal-deploy` runs after its CI, pushing the
+     Modal app from the GH runner
+   - `delulu-discord-deploy` chains after discord CI and the Modal
+     deploy, SSHing into the droplet to rebuild the bot container
+   - `pr-title-lint` only runs on `pull_request` events, so on a
+     manual dispatch it's skipped
 3. On the droplet, `docker ps` should show the `disco` container running,
    and `docker logs disco` should show a clean startup.
 
-If it fails, the SSH step prints everything to the workflow log — no need
-to SSH in to debug. Common failure modes:
+Each job's logs are viewable independently in the Actions UI — no need
+to SSH in to debug unless the failure is in the droplet-side step.
+Common failure modes:
 
-- **"Permission denied (publickey)"** — `DROPLET_SSH_KEY` is wrong, or the
-  public key isn't in `/root/.ssh/authorized_keys` on the droplet.
-- **"uv: command not found"** — `uv` isn't on the `root` user's `$PATH` in
-  non-interactive SSH sessions. Fix: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> /root/.bashrc` on the droplet (the workflow already re-exports this inside the script, but this ensures it also works for manual SSH).
-- **"error: unable to connect to Docker"** — `systemctl status docker` on
-  the droplet, `systemctl enable --now docker` if it's not running.
+- **`delulu-sandbox-modal-deploy` fails with an auth error** — the
+  `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` secrets are missing or wrong.
+  Test locally with
+  `MODAL_TOKEN_ID=ak-... MODAL_TOKEN_SECRET=as-... modal app list`
+  to verify the token has deploy permissions before re-adding.
+- **"Permission denied (publickey)"** in `delulu-discord-deploy` —
+  `DROPLET_SSH_KEY` is wrong, or the public key isn't in
+  `/root/.ssh/authorized_keys` on the droplet.
+- **"error: unable to connect to Docker"** in `delulu-discord-deploy` —
+  `systemctl status docker` on the droplet, `systemctl enable --now docker`
+  if it's not running.
 
 ### Rollback
 
-Rollback is a manual `git` operation on the droplet:
+Preferred: forward-revert via `git revert` on `main`. The same workflow
+that deployed the bad commit will redeploy the reverted state:
+
+```bash
+git checkout main && git pull
+git revert --no-edit <bad-sha>    # or the merge sha for a PR
+git push
+```
+
+This drives both the Modal deploy and the bot redeploy back to the
+prior state in one pipeline run (~2–4 minutes). No SSH required.
+
+If you need to unstick prod *faster* than a full pipeline run — e.g.
+the bot is crashing on every message — you can force the droplet's
+bot container back to a known-good image manually:
 
 ```bash
 ssh root@<droplet-ip>
 cd /root/SMILE-factory
 git log --oneline -10             # find the commit you want to roll back to
 git reset --hard <good-sha>
-
-make deploy-bot                   # or `make deploy-all` if sandbox code rolled back too
+make -C apps/delulu_discord deploy
 ```
 
-Then force-revert on the remote once you've confirmed the rollback works,
-so the next push doesn't redeploy the broken version.
+The sandbox side stays on the previously deployed Modal function
+until the next `delulu-sandbox-modal-deploy` run fires. If the bad
+code is in the sandbox and the bot needs a matching rollback,
+pair the above with a manual `modal deploy` from your laptop using
+the pre-bad commit's `apps/delulu_sandbox_modal/src/delulu_sandbox_modal/app.py`,
+or trigger `workflow_dispatch` on the reverted `main` once it's pushed.
+
+Then still push the `git revert` on the remote after the manual
+rollback, so the next main push doesn't redeploy the broken version.
 
 ---
 

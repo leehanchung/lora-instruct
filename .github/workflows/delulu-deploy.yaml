@@ -1,24 +1,24 @@
-name: discord-orchestrator
+name: delulu
 
-# Runs CI on PRs (pre-merge gate) and on pushes to main, and runs
-# CD on pushes to main only. Both CI and CD pipelines live in this
-# one workflow because they share the same paths filter and the CD
-# jobs explicitly depend on the CI jobs having passed.
+# Unified CI + CD pipeline for the delulu Discord bot.
 #
-# Jobs:
-#   - changes:                      paths filter (sandbox / bot,
-#                                   with and without tests/**)
-#   - delulu-discord-ci:            CI — ruff + pytest for the bot
-#   - delulu-sandbox-modal-ci:      CI — ruff + pytest for the sandbox
-#   - delulu-sandbox-modal-deploy:  CD — uv run modal deploy
-#                                   (from the GH runner, NOT the droplet)
-#   - delulu-discord-deploy:        CD — SSH into the droplet, rebuild
-#                                   the bot container, restart
+# Delulu is a two-app system:
+#   - apps/delulu_discord          — Discord bot on a VPS (droplet)
+#   - apps/delulu_sandbox_modal    — Modal sandbox function
 #
-# CI jobs run on both push and pull_request. CD jobs are gated with
-# ``github.event_name != 'pull_request'`` so they only fire after
-# a merge to main. This gives PR authors pre-merge feedback without
-# touching prod.
+# This one workflow covers both apps, with six jobs:
+#   - changes                        paths filter (bot / bot_runtime /
+#                                    sandbox / sandbox_runtime)
+#   - pr-title-lint                  Conventional Commits on PR titles
+#   - delulu-discord-ci              CI — ruff + pytest for the bot
+#   - delulu-sandbox-modal-ci        CI — ruff + pytest for the sandbox
+#   - delulu-sandbox-modal-deploy    CD — modal deploy from the GH runner
+#   - delulu-discord-deploy          CD — SSH droplet + rebuild container
+#
+# CI and PR-title linting run on pull_request and on push to main.
+# CD jobs only run on push to main (guarded with
+# ``github.event_name != 'pull_request'``). This gives PR authors
+# pre-merge feedback without touching prod.
 
 on:
   push:
@@ -26,15 +26,51 @@ on:
     paths:
       - 'apps/**'
       - 'Makefile'
-      - '.github/workflows/discord-orchestrator-deploy.yml'
+      - '.github/workflows/delulu-deploy.yaml'
   pull_request:
-    paths:
-      - 'apps/**'
-      - 'Makefile'
-      - '.github/workflows/discord-orchestrator-deploy.yml'
+    # Includes ``edited`` so the pr-title-lint job re-runs when the
+    # title is corrected without a new commit push. No ``paths`` filter
+    # here — if we filter by paths, a title-only edit wouldn't fire
+    # the workflow at all and the linter wouldn't re-check.
+    types: [opened, edited, reopened, synchronize]
   workflow_dispatch:
 
 jobs:
+  # ── PR title lint (independent) ──────────────────────────────
+  #
+  # Enforces Conventional Commits on PR titles. Since main uses
+  # squash-merge with the PR title as the commit subject, this is what
+  # actually keeps main's history conventional — no commit-msg hook
+  # required. Runs on every pull_request event so title edits
+  # re-validate without a code push.
+  pr-title-lint:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            docs
+            refactor
+            test
+            chore
+            ci
+            build
+            perf
+            style
+          requireScope: false
+          subjectPattern: ^[A-Za-z].+[^.]$
+          subjectPatternError: |
+            PR title subject must start with a letter and not end with a period.
+
+  # ── Paths filter ─────────────────────────────────────────────
+  #
   # Decide which CI and deploy jobs to run based on the files touched.
   # Two flavors of filter per app:
   #   - ``bot`` / ``sandbox``: matches *any* change under the app,
@@ -60,18 +96,18 @@ jobs:
           filters: |
             bot:
               - 'apps/delulu_discord/**'
-              - '.github/workflows/discord-orchestrator-deploy.yml'
+              - '.github/workflows/delulu-deploy.yaml'
             bot_runtime:
               - 'apps/delulu_discord/**'
               - '!apps/delulu_discord/tests/**'
-              - '.github/workflows/discord-orchestrator-deploy.yml'
+              - '.github/workflows/delulu-deploy.yaml'
             sandbox:
               - 'apps/delulu_sandbox_modal/**'
-              - '.github/workflows/discord-orchestrator-deploy.yml'
+              - '.github/workflows/delulu-deploy.yaml'
             sandbox_runtime:
               - 'apps/delulu_sandbox_modal/**'
               - '!apps/delulu_sandbox_modal/tests/**'
-              - '.github/workflows/discord-orchestrator-deploy.yml'
+              - '.github/workflows/delulu-deploy.yaml'
 
   # ── CI ──────────────────────────────────────────────────────
 
