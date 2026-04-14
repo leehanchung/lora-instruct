@@ -73,11 +73,15 @@ HOLD_SECONDS = 2.0
 TOLERANCE_SECONDS = 0.2
 
 scout_image = (
-    modal.Image.debian_slim(python_version="3.14")
-    # No third-party deps needed — only stdlib (fcntl, os, time).
-    # The image still inherits the debian base so flock() and the
-    # underlying kernel syscalls behave identically to the production
-    # sandbox image.
+    # Python 3.12, not 3.14. The production sandbox uses 3.14, which
+    # requires Modal Image Builder 2025.06+ (set workspace-wide via
+    # `modal config set image_builder_version 2025.06`). The scout
+    # deliberately avoids that dependency so it runs out-of-the-box
+    # on a fresh Modal config: its job is to test kernel-level flock
+    # semantics on a Modal Volume, which is identical regardless of
+    # which Python version the userspace process is running on.
+    # Only stdlib (`fcntl`, `os`, `time`, `shutil`) is used here.
+    modal.Image.debian_slim(python_version="3.12")
 )
 
 
