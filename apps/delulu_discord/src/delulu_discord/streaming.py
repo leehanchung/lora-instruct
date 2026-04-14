@@ -32,34 +32,49 @@ def render_done(num_tools: int, duration_ms: int) -> str:
     return f"✅ Done • {num_tools} tools • {duration_s:.1f}s"
 
 
-def _render(transcript: list[dict[str, Any]]) -> str:
+def _render(
+    transcript: list[dict[str, Any]],
+    *,
+    done_footer: str | None = None,
+) -> str:
     """Render the running transcript into Discord markdown.
 
     Pure function — given the same list of events always produces the
     same output. Rules:
 
-    - Empty transcript → initial "thinking..." placeholder.
+    - Empty transcript and no ``done_footer`` → initial
+      "thinking..." placeholder.
     - Latest ``thinking`` block collapses into one spoiler line at the
       top (``||🧠 Reasoning: …||``).
     - Each ``tool_use`` becomes ``🔧 <Tool> <summary>`` with a trailing
       ``✓`` / ``✗`` if a matching ``tool_result`` followed it.
-    - If any assistant ``text`` event is present, append an
-      ``✍️ Writing response...`` marker at the bottom.
+    - If any assistant ``text`` event is present AND the run isn't
+      done yet, append an ``✍️ Writing response...`` marker at the
+      bottom.
+    - If ``done_footer`` is set, the run is finished: the
+      ``✍️ Writing response...`` marker is dropped (it's no longer
+      true) and ``done_footer`` is appended as the last line instead.
+      This is how ``finalize_done`` keeps the live transcript visible
+      as a permanent record of what Claude Code did, with a small
+      ``✅ Done • N tools • Ts`` footer, rather than collapsing the
+      whole message.
     - If the transcript overflows Discord's 2000-char limit, drop the
       oldest tool-call lines and prefix with a truncation marker.
     """
-    if not transcript:
+    if not transcript and done_footer is None:
         return INITIAL_PLACEHOLDER
 
     header = _render_header(transcript)
     tool_lines = _render_tool_lines(transcript)
-    writing_marker = _render_writing_marker(transcript)
+    # The "writing response" marker only makes sense *during* the run;
+    # once the run is done, the writing is also done, so suppress it.
+    writing_marker = _render_writing_marker(transcript) if done_footer is None else None
 
-    rendered = _assemble(header, tool_lines, writing_marker)
+    rendered = _assemble(header, tool_lines, writing_marker, done_footer)
     if len(rendered) <= DISCORD_MESSAGE_LIMIT:
         return rendered
 
-    return _truncate_to_limit(header, tool_lines, writing_marker)
+    return _truncate_to_limit(header, tool_lines, writing_marker, done_footer)
 
 
 def _render_header(transcript: list[dict[str, Any]]) -> str:
@@ -118,11 +133,18 @@ def _render_writing_marker(transcript: list[dict[str, Any]]) -> str | None:
     return "✍️  Writing response..." if has_text else None
 
 
-def _assemble(header: str, tool_lines: list[str], writing_marker: str | None) -> str:
+def _assemble(
+    header: str,
+    tool_lines: list[str],
+    writing_marker: str | None,
+    done_footer: str | None = None,
+) -> str:
     parts = [header]
     parts.extend(tool_lines)
     if writing_marker:
         parts.append(writing_marker)
+    if done_footer:
+        parts.append(done_footer)
     return "\n".join(parts)
 
 
@@ -130,6 +152,7 @@ def _truncate_to_limit(
     header: str,
     tool_lines: list[str],
     writing_marker: str | None,
+    done_footer: str | None = None,
 ) -> str:
     """Drop oldest tool lines until the assembled output fits.
 
@@ -141,7 +164,7 @@ def _truncate_to_limit(
     truncated = False
     while kept:
         candidate_tool_lines = ["🔧 … earlier tool calls truncated", *kept] if truncated else kept
-        rendered = _assemble(header, candidate_tool_lines, writing_marker)
+        rendered = _assemble(header, candidate_tool_lines, writing_marker, done_footer)
         if len(rendered) <= DISCORD_MESSAGE_LIMIT:
             return rendered
         kept.pop(0)
@@ -150,7 +173,7 @@ def _truncate_to_limit(
     # Pathological fallback: even an empty tool list overflows (huge
     # thinking preview). Hard-truncate the result so we never post
     # something Discord would reject outright.
-    rendered = _assemble(header, [], writing_marker)
+    rendered = _assemble(header, [], writing_marker, done_footer)
     return rendered[:DISCORD_MESSAGE_LIMIT]
 
 
@@ -197,9 +220,17 @@ class LiveStatus:
         self._dirty = True
 
     async def finalize_done(self, *, num_tools: int, duration_ms: int) -> None:
-        """Stop the flush loop and collapse the status to ``✅ Done``."""
+        """Stop the flush loop and finalize the status message.
+
+        The live transcript stays visible as a permanent record of
+        what Claude Code did — tool calls, thinking preview, etc. —
+        with a small ``✅ Done • N tools • Ts`` footer appended. The
+        ``✍️ Writing response...`` marker is dropped at this point
+        since it's no longer true.
+        """
         await self._stop_flush()
-        await self._safe_edit(render_done(num_tools, duration_ms))
+        footer = render_done(num_tools, duration_ms)
+        await self._safe_edit(_render(self.transcript, done_footer=footer))
 
     async def finalize_error(self) -> None:
         """Stop the flush loop and leave the status frozen on its last state.
