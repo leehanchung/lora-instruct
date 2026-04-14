@@ -8,9 +8,12 @@ import sys
 
 import discord
 import structlog
+from discord import app_commands
 
+from delulu_discord.commands import register_slash_commands
 from delulu_discord.dispatcher import SandboxDispatcher
 from delulu_discord.handlers import MessageHandler
+from delulu_discord.repo_allowlist import RepoAllowlist
 from delulu_discord.repo_config import RepoConfig
 from delulu_discord.session_manager import SessionManager
 from delulu_discord.settings import Settings
@@ -31,15 +34,22 @@ def create_bot(settings: Settings) -> discord.Client:
     intents.guilds = True
 
     client = discord.Client(intents=intents)
+    # CommandTree owns the slash commands. Created here so the
+    # closure-over-deps registration in commands.register_slash_commands
+    # has a tree to attach to, and on_ready can call .sync() to push
+    # the commands to Discord at bot startup.
+    tree = app_commands.CommandTree(client)
 
     # ── Wire up components ───────────────────────────────────
     session_manager = SessionManager(ttl_seconds=settings.session_ttl_seconds)
     dispatcher = SandboxDispatcher(settings=settings)
-    # RepoConfig instantiates a modal.Dict at startup. Empty until
-    # the /setrepo command (Phase 3) lets users add bindings; until
-    # then `repo_config.get(channel_id)` always returns None and
-    # every dispatch falls through to the no-repo general-Q&A path.
+    # Modal-Dict-backed channel→(repo_url, ref) binding store. Set
+    # via /setrepo, looked up at @claude dispatch time.
     repo_config = RepoConfig()
+    # Modal-Dict-backed per-server allowlist. Populated via the
+    # admin slash commands gated on MANAGE_GUILD; consulted by
+    # /setrepo to decide whether a binding is permitted.
+    repo_allowlist = RepoAllowlist()
     handler = MessageHandler(
         settings=settings,
         session_manager=session_manager,
@@ -47,9 +57,29 @@ def create_bot(settings: Settings) -> discord.Client:
         repo_config=repo_config,
     )
 
+    register_slash_commands(
+        tree,
+        repo_config=repo_config,
+        repo_allowlist=repo_allowlist,
+    )
+
     # ── Event handlers ───────────────────────────────────────
     @client.event
     async def on_ready():
+        # Push slash command definitions to Discord. This is a
+        # global sync, which can take up to ~1 hour to propagate
+        # to every server the bot is installed in (Discord
+        # caches command definitions per-guild). For development
+        # against a single test guild, swap to
+        # ``await tree.sync(guild=discord.Object(id=...))`` for
+        # near-instant updates. Sync-on-startup is fine here:
+        # the bot doesn't restart often, and Discord deduplicates
+        # no-op syncs internally.
+        try:
+            synced = await tree.sync()
+            logger.info("commands.synced", count=len(synced))
+        except Exception:
+            logger.exception("commands.sync_failed")
         logger.info("bot.ready", user=str(client.user), guilds=len(client.guilds))
 
     @client.event
