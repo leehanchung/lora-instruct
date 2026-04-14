@@ -39,20 +39,47 @@ cold-start problem and is being replaced by the scheme below.
 | Question | Choice |
 |---|---|
 | Repo specification UX | Per-channel binding via `/setrepo` slash command. Argument is `repo:<owner>/<repo>` short form (not full URL), autocompleted from the server's allowlist. |
-| Git auth | Public repos only for clone; optional PAT for `/commit` push |
+| Git auth | Public repos only for clone; single shared `github-pat` Modal secret for `/commit` push. Refuse-and-instruct when missing. |
 | Warm container pool | No — cold container start is acceptable |
 | Access control | Per-server allowlist stored in `modal.Dict`, managed via admin-only slash commands gated on Discord's `MANAGE_GUILD` permission. `/setrepo` rejects any repo not on the server's allowlist. See "Access control and threat model" below. |
+| Identity / multi-user scope | Single-user or single-team model. All commits attribute to the PAT owner (i.e., you). Audit trail is the Discord thread history, not git blame. See "Scope: single user / single team" below. |
+| Active-repo visibility | `LiveStatus` gains a second line under the thinking/reasoning header showing `📁 <owner>/<repo>@<ref>` when a repo is bound; rendered as a plain line (not a spoiler), omitted entirely when no repo is bound. |
 | v1 scope | Provisioning + allowlist + `/commit` commit-back |
+
+### Scope: single user / single team
+
+v1 assumes the bot is operated by one person or one team working on a
+shared set of repos. The `github-pat` Modal secret is a single shared
+credential — every commit the bot makes is authenticated by that PAT,
+and the git `Author:` / `Committer:` fields reflect the PAT owner's
+identity. This is fine for a solo user or a small trusted team where
+the Discord thread history is the real audit trail ("who asked for
+what"), not git blame.
+
+**What this explicitly does NOT handle:**
+
+- Multiple independent users, each wanting commits attributed to their
+  own GitHub identity. The right answer there is a **GitHub App** with
+  per-user installations (OAuth callback, per-user installation
+  tokens, token refresh), parked in v2 and called out in the "Out of
+  scope" section. The single-PAT design does not scale to that; don't
+  try to grow it sideways with a Modal Dict of per-user PATs — that's
+  the worst of both worlds (security surface of stored PATs, friction
+  of Discord-side onboarding, no actual identity preservation).
+
+If v1 usage hits the limits of the single-team model, migrate the
+auth layer to the GitHub App path rather than extending the shared-PAT
+scheme.
 
 ### Note on the auth / commit-back tension
 
 "Public repos only" means clone/fetch need no credentials. But `/commit`
 requires *push*, which GitHub requires auth for even on public repos.
-Resolution: clone path uses anonymous HTTPS; `/commit` path reads an
-optional `github-pat` Modal secret and errors cleanly if it's absent
-(`"configure github-pat Modal secret to enable push; changes are
-committed locally on the volume"`). Users who only care about read/edit
-get zero-setup v1; users who want push set the secret separately.
+Resolution: clone path uses anonymous HTTPS; `/commit` path reads the
+`github-pat` Modal secret and **refuses cleanly with setup instructions
+if missing** (see "Commit-back flow" below for the exact message).
+Users who only care about read/edit get zero-setup v1; users who want
+push set the secret separately via `modal secret create`.
 
 ## Access control and threat model
 
@@ -372,6 +399,52 @@ default_git_ref: str = "HEAD"
 provision_lock_timeout_seconds: int = 60
 ```
 
+### Modify: `apps/delulu_discord/src/delulu_discord/streaming.py`
+
+`LiveStatus` already renders a thinking/reasoning header as the first
+line of the status message and doesn't collapse the transcript at
+`finalize_done` (already verified in `streaming.py:58-60`). Add an
+**active-repo subtitle** that renders as the second line whenever a
+repo is bound and is omitted entirely when there's no binding.
+
+Shape with a repo bound:
+
+```
+💭 Thinking about your request...
+📁 alice/api-service@main
+```
+
+```
+||🧠 Reasoning: should probably read the middleware file first…||
+📁 alice/api-service@main
+🔧 Read app/middleware.py ✓
+🔧 Grep "rate_limit" ✓
+✅ Done • 14 tools • 42s
+```
+
+Shape with no repo bound (identical to today):
+
+```
+💭 Thinking about your request...
+```
+
+Concrete change:
+
+- `LiveStatus.__init__` takes an optional `repo_url: str | None` and
+  `ref: str` (both threaded through from `handlers._dispatch_and_respond`
+  via the `Session`).
+- `_render()` gains a second positional: a `repo_line: str | None`. When
+  non-None, it's emitted between the header and the tool lines. When
+  None, it's a no-op — the existing output is unchanged.
+- `_render_header()` logic is unchanged; thinking stays first.
+- `_truncate_to_limit()` treats the repo line as protected (never
+  truncated — it's cheap, it's orientation, and dropping it makes the
+  long-transcript overflow case harder to read).
+
+This is 15–20 lines of new code plus a `LiveStatus.__init__` signature
+change. The existing `streaming.py` test file should gain coverage
+for the repo-bound and no-repo branches.
+
 ### Note: the legacy `workspace.py` stub is already gone
 
 The earlier orphaned `workspace.py` was removed when the two apps were
@@ -381,18 +454,31 @@ stragglers crept back in.
 
 ## Commit-back flow (`/commit`)
 
-- Sandbox side: `/commit` dispatches a separate Modal function
-  (`commit_workspace`) — or a `mode=commit` path on `run_claude_code` —
-  that runs inside the same workspace, checks out (or creates) branch
-  `claude/<thread_id>`, runs `git add -A && git commit -m "<message>"`,
-  then attempts `git push`.
+- **Pre-flight check.** Before touching the workspace, verify the
+  `github-pat` Modal secret is available (Modal injects it as
+  `GITHUB_TOKEN`). If missing, **refuse-and-instruct**: reply
+  ephemerally with
+  > ❌ Can't commit — `github-pat` Modal secret missing or expired.
+  > Run `modal secret create github-pat GITHUB_TOKEN=<pat>` on your
+  > laptop, then re-run `/commit`. Your workspace changes are still
+  > there.
+
+  No local commit is made in this case — the working tree is left
+  exactly as Claude left it. User re-runs after configuring the
+  secret and the command proceeds end-to-end. This is simpler than
+  commit-locally-and-instruct (no hidden state on the volume, no
+  confusion about what "committed locally" means) and the no-PAT
+  path is rare in practice — it's a first-time setup or
+  token-expiration event, not a normal-use concern.
+
+- **Happy path.** Dispatch a separate Modal function
+  (`commit_workspace`) — or a `mode=commit` path on `run_claude_code`
+  — that runs inside the same workspace, checks out (or creates)
+  branch `claude/<thread_id>`, runs
+  `git add -A && git commit -m "<message>"`, then pushes.
 - The push rewrite injects the PAT only at push time via
   `git -c http.extraheader="Authorization: Basic ..."`, never persisted
   into `.git/config`.
-- If `GITHUB_TOKEN` env var is missing (no `github-pat` secret configured):
-  - Still do the local commit so state is preserved on the volume.
-  - Return a clear message: "*committed locally on the volume; configure
-    `github-pat` Modal secret to enable push*".
 - Document the setup in README: `modal secret create github-pat
   GITHUB_TOKEN=<pat>`.
 
@@ -441,9 +527,11 @@ Acquire with 60s timeout; surface a clean error on timeout.
    - Follow-up reply (no @mention) → `claude --continue` resumes in the
      same workspace, confirms the cwd-stable session continuity
      invariant still holds.
-   - `/commit "test commit"` without PAT → local commit succeeds,
-     "configure github-pat" message shown.
-   - Configure `github-pat`, re-run `/commit` → push succeeds.
+   - `/commit "test commit"` without PAT configured → refused with the
+     "configure github-pat" message; workspace unchanged (no hidden
+     local commit on the volume).
+   - Configure `github-pat`, re-run `/commit` → commit lands, push
+     succeeds, branch `claude/<thread_id>` appears on the remote.
    - As a non-admin user, `/admin_removerepo` → rejected by Discord
      itself (MANAGE_GUILD permission missing), before the command
      handler runs.
@@ -466,34 +554,6 @@ All paths are relative to the repo root:
 - `apps/delulu_discord/src/delulu_discord/session_manager.py` — store `repo_url` / `ref` on Session
 - `apps/delulu_discord/src/delulu_discord/settings.py` — new config fields
 
-## Open UX decisions (resolve before implementation)
-
-These are design calls flagged during the scenario walkthrough but
-not yet locked in:
-
-1. **`/commit` without a PAT: refuse-and-instruct, or commit-locally-
-   and-instruct?** The PRD currently says "commit locally on the
-   volume, tell the user to configure the PAT and re-run." That means
-   the commit exists only on the Modal volume in a state the user
-   can't see, inspect, or share. Alternative: refuse the `/commit`
-   entirely when no PAT is configured, with a clear "configure
-   `github-pat` first, then re-run" message. Refusing is less magical
-   and avoids hidden state. **Recommendation: refuse-and-instruct.**
-
-2. **`/setrepo` URL validation timing.** Validate via `git ls-remote`
-   at bind time (catches typos and private repos immediately while
-   the user is in flow with the command), or accept anything and
-   fail at first dispatch (simpler implementation, worse feedback
-   loop)? **Recommendation: validate at bind time.** Note: with the
-   allowlist in place, `/admin_addrepo` is where this validation
-   happens, not `/setrepo` — so this question is moot if the
-   allowlist is the only path in. Keeping it listed as a reminder.
-
-3. **Active-repo visibility in the `LiveStatus` header.** Should the
-   streaming status message show `running in alice/api-service@main`
-   so users in a channel with multiple open threads stay oriented?
-   **Recommendation: add it, cheap win.**
-
 ## Out of scope — park for v2
 
 - Private repo support (requires PAT-at-clone auth rewriting).
@@ -505,3 +565,15 @@ not yet locked in:
 - Per-user dispatch rate limits (independent of allowlist — someone
   in an allowlisted channel can still spam `@corchestra` and burn
   subscription quota). Revisit if it becomes a real problem.
+- **Multi-user identity via GitHub App.** The v1 single-PAT model
+  works for a solo user or a trusted team. Scaling to N independent
+  users — each wanting commits attributed to their own GitHub
+  identity, each with their own per-repo access grants — requires
+  registering a GitHub App, adding an OAuth callback endpoint (Modal
+  supports this via `@modal.asgi_app` / `@modal.web_endpoint`), a
+  `/connect` slash command that DMs the user an install link, and
+  per-user installation-token storage with refresh logic (~200 lines
+  of new infra). Do NOT try to grow the shared-PAT scheme sideways
+  into a multi-user model by storing per-user PATs in a `modal.Dict`
+  — that's the worst of both worlds and makes migration to the App
+  path harder later.
