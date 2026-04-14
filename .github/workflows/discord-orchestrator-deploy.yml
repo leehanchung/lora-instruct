@@ -1,4 +1,24 @@
-name: discord-orchestrator deploy
+name: discord-orchestrator
+
+# Runs CI on PRs (pre-merge gate) and on pushes to main, and runs
+# CD on pushes to main only. Both CI and CD pipelines live in this
+# one workflow because they share the same paths filter and the CD
+# jobs explicitly depend on the CI jobs having passed.
+#
+# Jobs:
+#   - changes:                      paths filter (sandbox / bot,
+#                                   with and without tests/**)
+#   - delulu-discord-ci:            CI — ruff + pytest for the bot
+#   - delulu-sandbox-modal-ci:      CI — ruff + pytest for the sandbox
+#   - delulu-sandbox-modal-deploy:  CD — uv run modal deploy
+#                                   (from the GH runner, NOT the droplet)
+#   - delulu-discord-deploy:        CD — SSH into the droplet, rebuild
+#                                   the bot container, restart
+#
+# CI jobs run on both push and pull_request. CD jobs are gated with
+# ``github.event_name != 'pull_request'`` so they only fire after
+# a merge to main. This gives PR authors pre-merge feedback without
+# touching prod.
 
 on:
   push:
@@ -7,10 +27,161 @@ on:
       - 'apps/**'
       - 'Makefile'
       - '.github/workflows/discord-orchestrator-deploy.yml'
+  pull_request:
+    paths:
+      - 'apps/**'
+      - 'Makefile'
+      - '.github/workflows/discord-orchestrator-deploy.yml'
   workflow_dispatch:
 
 jobs:
-  deploy:
+  # Decide which CI and deploy jobs to run based on the files touched.
+  # Two flavors of filter per app:
+  #   - ``bot`` / ``sandbox``: matches *any* change under the app,
+  #     including tests. Gates the CI jobs — test-only changes must
+  #     still run the test suite.
+  #   - ``bot_runtime`` / ``sandbox_runtime``: excludes ``tests/**``.
+  #     Gates the deploy jobs — we don't redeploy Modal or rebuild
+  #     the bot container for a test-only change.
+  # On ``workflow_dispatch`` every gated job bypasses the filter so
+  # the "Re-run" button always redeploys end-to-end.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      bot: ${{ steps.filter.outputs.bot }}
+      bot_runtime: ${{ steps.filter.outputs.bot_runtime }}
+      sandbox: ${{ steps.filter.outputs.sandbox }}
+      sandbox_runtime: ${{ steps.filter.outputs.sandbox_runtime }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            bot:
+              - 'apps/delulu_discord/**'
+              - '.github/workflows/discord-orchestrator-deploy.yml'
+            bot_runtime:
+              - 'apps/delulu_discord/**'
+              - '!apps/delulu_discord/tests/**'
+              - '.github/workflows/discord-orchestrator-deploy.yml'
+            sandbox:
+              - 'apps/delulu_sandbox_modal/**'
+              - '.github/workflows/discord-orchestrator-deploy.yml'
+            sandbox_runtime:
+              - 'apps/delulu_sandbox_modal/**'
+              - '!apps/delulu_sandbox_modal/tests/**'
+              - '.github/workflows/discord-orchestrator-deploy.yml'
+
+  # ── CI ──────────────────────────────────────────────────────
+
+  # CI for apps/delulu_discord. Runs ruff check, ruff format --check,
+  # and pytest inside the app. Gated on ``bot`` (matches any change
+  # under the app, including tests) so test-only edits still run the
+  # suite.
+  delulu-discord-ci:
+    needs: changes
+    if: needs.changes.outputs.bot == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/delulu_discord
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: install dev deps
+        run: uv sync --extra dev
+      - name: ruff check
+        run: uv run ruff check .
+      - name: ruff format --check
+        run: uv run ruff format --check .
+      - name: pytest
+        run: uv run pytest
+
+  # CI for apps/delulu_sandbox_modal. Separate job (not chained steps
+  # in a single runner) so a failure in the discord suite doesn't
+  # hide a sandbox regression, and so both suites run in parallel on
+  # independent runners.
+  delulu-sandbox-modal-ci:
+    needs: changes
+    if: needs.changes.outputs.sandbox == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/delulu_sandbox_modal
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: install dev deps
+        run: uv sync --extra dev
+      - name: ruff check
+        run: uv run ruff check .
+      - name: ruff format --check
+        run: uv run ruff format --check .
+      - name: pytest
+        run: uv run pytest
+
+  # ── CD ──────────────────────────────────────────────────────
+
+  # Deploy the Modal sandbox app directly from the GitHub runner. Uses
+  # a dedicated CI Modal token (``MODAL_TOKEN_ID`` / ``MODAL_TOKEN_SECRET``
+  # repository secrets) so this path is independent of the droplet —
+  # the VPS no longer needs Modal credentials or a Python toolchain
+  # just to ship sandbox code.
+  #
+  # Gated on:
+  #   - not a PR (CD never runs on pull_request events)
+  #   - sandbox CI passing
+  #   - an actual runtime change (``sandbox_runtime`` excludes
+  #     tests/**) so test-only edits don't redeploy the function
+  delulu-sandbox-modal-deploy:
+    needs: [changes, delulu-sandbox-modal-ci]
+    if: |
+      always() &&
+      github.event_name != 'pull_request' &&
+      needs.delulu-sandbox-modal-ci.result == 'success' &&
+      (needs.changes.outputs.sandbox_runtime == 'true' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: deploy modal sandbox app
+        working-directory: apps/delulu_sandbox_modal
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          MODAL_IMAGE_BUILDER_VERSION: '2025.06'
+        run: |
+          uv sync
+          uv run modal deploy src/delulu_sandbox_modal/app.py
+
+  # Rebuild and restart the bot container on the droplet.
+  #
+  # Gated on:
+  #   - not a PR
+  #   - discord CI passing (broken tests don't deploy)
+  #   - the sandbox deploy being done OR skipped (so a combined
+  #     sandbox+bot push never restarts the bot against a stale
+  #     Modal function, but a bot-only push doesn't wait for a
+  #     sandbox deploy that isn't happening)
+  #   - ``bot_runtime`` being true (test-only bot edits don't
+  #     rebuild the Docker image)
+  # The ``always()`` wrapper is what lets the "done or skipped" gate
+  # fire even when ``delulu-sandbox-modal-deploy`` wasn't needed.
+  delulu-discord-deploy:
+    needs: [changes, delulu-discord-ci, delulu-sandbox-modal-deploy]
+    if: |
+      always() &&
+      github.event_name != 'pull_request' &&
+      needs.delulu-discord-ci.result == 'success' &&
+      (needs.delulu-sandbox-modal-deploy.result == 'success' || needs.delulu-sandbox-modal-deploy.result == 'skipped') &&
+      (needs.changes.outputs.bot_runtime == 'true' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     steps:
       - name: SSH into droplet, rebuild, and restart
@@ -24,23 +195,8 @@ jobs:
             export PATH="$HOME/.local/bin:$PATH"
 
             cd /root/SMILE-factory
-            OLD_SHA=$(git rev-parse HEAD)
             git pull --ff-only
-            NEW_SHA=$(git rev-parse HEAD)
-            echo "Deploying $OLD_SHA -> $NEW_SHA"
 
-            # Redeploy the Modal sandbox app only if its source changed
-            # (or on a workflow_dispatch / unchanged HEAD, where we can't
-            # diff, so err on the side of redeploying).
-            if [ "$OLD_SHA" = "$NEW_SHA" ] || \
-               git diff --name-only "$OLD_SHA" "$NEW_SHA" -- apps/delulu_sandbox_modal/ | grep -q .; then
-              echo "→ redeploying Modal sandbox app"
-              make -C apps/delulu_sandbox_modal sync modal-deploy
-            else
-              echo "→ skipping Modal redeploy (no changes under apps/delulu_sandbox_modal/)"
-            fi
-
-            # Rebuild the bot image and restart the container.
             make -C apps/delulu_discord deploy
             docker image prune -f
-            echo "Deploy complete"
+            echo "Bot deploy complete"
