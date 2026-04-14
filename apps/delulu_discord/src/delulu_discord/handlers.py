@@ -79,25 +79,46 @@ class MessageHandler:
         *,
         resume: bool,
     ) -> None:
-        """Run Claude Code in a Modal sandbox and post the result."""
-        # Show typing indicator while working
+        """Run Claude Code in a Modal sandbox and post the result.
+
+        ``dispatcher.run_task`` is now an async generator that yields
+        event dicts. This method drains the stream, picks the final
+        text out of the terminal ``done`` / ``error`` event, and still
+        posts a single message at the end — the live status message
+        and 1-edit/sec flush loop land in a follow-up commit.
+        """
+        final_text = ""
+        error_message: str | None = None
         async with thread.typing():
             try:
-                result = await self.dispatcher.run_task(
+                async for event in self.dispatcher.run_task(
                     session_id=session.session_id,
                     workspace_path=session.workspace_path,
                     prompt=prompt,
                     resume=resume,
                     attachments=attachments,
                     message_id=message_id,
-                )
+                ):
+                    etype = event.get("type") if isinstance(event, dict) else None
+                    if etype == "done":
+                        final_text = event.get("final_text") or final_text
+                    elif etype == "error":
+                        error_message = event.get("message") or "unknown error"
             except Exception:
                 logger.exception("task.failed", session_id=session.session_id)
                 await thread.send("Something went wrong running that task. Check the logs.")
                 return
 
-        # Post result, respecting Discord's character limit
-        await self._post_result(thread, result)
+        if error_message:
+            output = (
+                f"{final_text}\n\n[error]\n{error_message}".strip()
+                if final_text
+                else f"[error] {error_message}"
+            )
+        else:
+            output = final_text
+
+        await self._post_result(thread, output)
 
     async def _post_result(self, thread: discord.Thread, output: str) -> None:
         """Post output to thread, falling back to file upload if too long."""
