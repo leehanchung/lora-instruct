@@ -29,7 +29,11 @@ build-backend = "hatchling.build"
 packages = ["src/delulu_discord"]
 
 [tool.ruff]
-target-version = "py314"
+# Pinned to py313 (even though requires-python is >=3.14) so ruff's
+# formatter doesn't emit PEP 758 unparenthesized `except A, B:` syntax.
+# That form is valid in 3.14 but trips the claude-code-review autofix,
+# which treats it as a Python 2 SyntaxError and reverts every run.
+target-version = "py313"
 line-length = 100
 
 [tool.ruff.lint]
