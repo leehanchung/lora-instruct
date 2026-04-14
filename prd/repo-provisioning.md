@@ -1,8 +1,8 @@
-# Efficient GitHub repo provisioning for discord-orchestrator
+# Efficient GitHub repo provisioning for delulu
 
 ## Context
 
-The discord-orchestrator bot is an @mention-gated interface to Claude Code
+The delulu bot is an @mention-gated interface to Claude Code
 running in ephemeral Modal sandboxes. Today the sandbox function creates an
 empty workspace directory and runs `claude -p <prompt>` in it — there's no
 repo, so Claude can only answer general questions. The user wants to extend
