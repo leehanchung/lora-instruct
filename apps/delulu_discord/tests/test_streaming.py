@@ -156,6 +156,75 @@ def test_render_done_formatting() -> None:
     assert render_done(1, 1234) == "✅ Done • 1 tools • 1.2s"
 
 
+# ── done_footer keeps the transcript expanded ────────────────────
+
+
+def test_render_with_done_footer_keeps_tool_lines() -> None:
+    """The whole point of done_footer: the transcript stays visible."""
+    transcript = [
+        _tool_use("Read", "`src/app.py`"),
+        _tool_result("Read", ok=True),
+        _tool_use("Grep", "`foo`"),
+        _tool_result("Grep", ok=True),
+    ]
+    rendered = _render(transcript, done_footer="✅ Done • 2 tools • 3.1s")
+    assert "🔧 Read `src/app.py` ✓" in rendered
+    assert "🔧 Grep `foo` ✓" in rendered
+    assert rendered.splitlines()[-1] == "✅ Done • 2 tools • 3.1s"
+
+
+def test_render_with_done_footer_drops_writing_marker() -> None:
+    """Once the run is done, ``✍️ Writing response...`` is no longer true."""
+    transcript = [
+        _tool_use("Read", "`a.py`"),
+        {"type": "text", "text": "partial answer..."},
+    ]
+    rendered = _render(transcript, done_footer="✅ Done • 1 tools • 0.5s")
+    assert "✍️" not in rendered
+    assert rendered.splitlines()[-1] == "✅ Done • 1 tools • 0.5s"
+
+
+def test_render_with_done_footer_preserves_thinking_spoiler() -> None:
+    transcript = [
+        {"type": "thinking", "text": "thinking about the approach"},
+        _tool_use("Read", "`x.py`"),
+        _tool_result("Read", ok=True),
+    ]
+    rendered = _render(transcript, done_footer="✅ Done • 1 tools • 2.0s")
+    lines = rendered.splitlines()
+    assert lines[0].startswith("||🧠 Reasoning:")
+    assert "thinking about the approach" in lines[0]
+    assert lines[-1] == "✅ Done • 1 tools • 2.0s"
+
+
+def test_render_empty_transcript_with_done_footer_still_shows_something() -> None:
+    """A zero-tool run (trivial reply) should still produce valid output
+    so ``finalize_done`` has something to edit the status message to.
+    The header is the default placeholder + the footer — ugly but
+    non-crashing, and in practice zero-tool runs also have a text event
+    so the placeholder gets replaced in the header logic anyway."""
+    rendered = _render([], done_footer="✅ Done • 0 tools • 0.3s")
+    assert rendered != INITIAL_PLACEHOLDER  # must NOT be the placeholder alone
+    assert rendered.endswith("✅ Done • 0 tools • 0.3s")
+
+
+async def test_finalize_done_edits_with_full_transcript_and_footer() -> None:
+    """Regression: the old finalize_done called ``render_done`` alone,
+    which collapsed the transcript. The new path must call ``_render``
+    with a ``done_footer`` so the tool lines stay visible."""
+    msg = _fake_message()
+    live = LiveStatus(msg)
+    live.push(_tool_use("Read", "`src/app.py`"))
+    live.push(_tool_result("Read", ok=True))
+
+    await live.finalize_done(num_tools=1, duration_ms=1500)
+
+    msg.edit.assert_called_once()
+    content = msg.edit.call_args.kwargs["content"]
+    assert "🔧 Read `src/app.py` ✓" in content
+    assert content.splitlines()[-1] == "✅ Done • 1 tools • 1.5s"
+
+
 # ── LiveStatus edit kwargs (regression) ─────────────────────────
 #
 # Commit 3 shipped with ``status_msg.edit(..., suppress_embeds=True)``,
