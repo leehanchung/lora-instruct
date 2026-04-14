@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from urllib.parse import urlparse
 
 import discord
 import structlog
@@ -36,6 +37,8 @@ def _render(
     transcript: list[dict[str, Any]],
     *,
     done_footer: str | None = None,
+    repo_url: str | None = None,
+    ref: str = "HEAD",
 ) -> str:
     """Render the running transcript into Discord markdown.
 
@@ -43,9 +46,14 @@ def _render(
     same output. Rules:
 
     - Empty transcript and no ``done_footer`` → initial
-      "thinking..." placeholder.
+      "thinking..." placeholder. The repo subtitle is appended below
+      the placeholder if a repo is bound.
     - Latest ``thinking`` block collapses into one spoiler line at the
       top (``||🧠 Reasoning: …||``).
+    - If ``repo_url`` is set, an active-repo subtitle line
+      (``📁 owner/repo@ref``) is rendered as the second line, right
+      below the thinking/reasoning header. Omitted entirely when
+      ``repo_url is None``.
     - Each ``tool_use`` becomes ``🔧 <Tool> <summary>`` with a trailing
       ``✓`` / ``✗`` if a matching ``tool_result`` followed it.
     - If any assistant ``text`` event is present AND the run isn't
@@ -59,10 +67,16 @@ def _render(
       ``✅ Done • N tools • Ts`` footer, rather than collapsing the
       whole message.
     - If the transcript overflows Discord's 2000-char limit, drop the
-      oldest tool-call lines and prefix with a truncation marker.
+      oldest tool-call lines and prefix with a truncation marker. The
+      repo subtitle is **protected** — never truncated, since it's a
+      single short line and dropping it would lose orientation.
     """
+    repo_line = _format_repo_line(repo_url, ref)
+
     if not transcript and done_footer is None:
-        return INITIAL_PLACEHOLDER
+        if repo_line is None:
+            return INITIAL_PLACEHOLDER
+        return f"{INITIAL_PLACEHOLDER}\n{repo_line}"
 
     header = _render_header(transcript)
     tool_lines = _render_tool_lines(transcript)
@@ -70,11 +84,49 @@ def _render(
     # once the run is done, the writing is also done, so suppress it.
     writing_marker = _render_writing_marker(transcript) if done_footer is None else None
 
-    rendered = _assemble(header, tool_lines, writing_marker, done_footer)
+    rendered = _assemble(header, tool_lines, writing_marker, done_footer, repo_line)
     if len(rendered) <= DISCORD_MESSAGE_LIMIT:
         return rendered
 
-    return _truncate_to_limit(header, tool_lines, writing_marker, done_footer)
+    return _truncate_to_limit(header, tool_lines, writing_marker, done_footer, repo_line)
+
+
+def _format_repo_line(repo_url: str | None, ref: str) -> str | None:
+    """Build the ``📁 owner/repo@ref`` subtitle line, or None if no repo.
+
+    Parses ``owner/repo`` from the full URL for compact display. The
+    parsing is intentionally inline (rather than importing from the
+    sandbox-side ``repo_provisioner``) — the bot and sandbox apps
+    are deliberately kept import-isolated so they can deploy
+    independently.
+    """
+    if not repo_url:
+        return None
+    return f"📁 {_short_repo_name(repo_url)}@{ref}"
+
+
+def _short_repo_name(repo_url: str) -> str:
+    """Return ``owner/repo`` from a git URL.
+
+    Accepts ``https://github.com/owner/repo[.git]`` and
+    ``git@host:owner/repo[.git]``. Falls back to the raw URL on
+    anything unparseable rather than raising — display code should
+    never crash on a weird value.
+    """
+    url = repo_url.strip().rstrip("/")
+    if url.endswith(".git"):
+        url = url[:-4].rstrip("/")
+
+    if url.startswith("git@"):
+        # git@host:owner/repo
+        _, _, path = url[len("git@") :].partition(":")
+    else:
+        path = urlparse(url).path.lstrip("/")
+
+    parts = [p for p in path.split("/") if p]
+    if len(parts) >= 2:
+        return f"{parts[-2]}/{parts[-1]}"
+    return repo_url
 
 
 def _render_header(transcript: list[dict[str, Any]]) -> str:
@@ -138,8 +190,11 @@ def _assemble(
     tool_lines: list[str],
     writing_marker: str | None,
     done_footer: str | None = None,
+    repo_line: str | None = None,
 ) -> str:
     parts = [header]
+    if repo_line:
+        parts.append(repo_line)
     parts.extend(tool_lines)
     if writing_marker:
         parts.append(writing_marker)
@@ -153,18 +208,21 @@ def _truncate_to_limit(
     tool_lines: list[str],
     writing_marker: str | None,
     done_footer: str | None = None,
+    repo_line: str | None = None,
 ) -> str:
     """Drop oldest tool lines until the assembled output fits.
 
     Always keeps at least the most recent tool line so the user sees
     what's currently running. Prefixes the remaining list with a
     ``… earlier tool calls truncated`` marker once anything is dropped.
+    The repo subtitle is protected — it's a single short line and
+    dropping it would lose orientation across multi-thread channels.
     """
     kept = list(tool_lines)
     truncated = False
     while kept:
         candidate_tool_lines = ["🔧 … earlier tool calls truncated", *kept] if truncated else kept
-        rendered = _assemble(header, candidate_tool_lines, writing_marker, done_footer)
+        rendered = _assemble(header, candidate_tool_lines, writing_marker, done_footer, repo_line)
         if len(rendered) <= DISCORD_MESSAGE_LIMIT:
             return rendered
         kept.pop(0)
@@ -173,7 +231,7 @@ def _truncate_to_limit(
     # Pathological fallback: even an empty tool list overflows (huge
     # thinking preview). Hard-truncate the result so we never post
     # something Discord would reject outright.
-    rendered = _assemble(header, [], writing_marker, done_footer)
+    rendered = _assemble(header, [], writing_marker, done_footer, repo_line)
     return rendered[:DISCORD_MESSAGE_LIMIT]
 
 
@@ -199,9 +257,19 @@ class LiveStatus:
         status_msg: discord.Message,
         *,
         flush_interval: float = FLUSH_INTERVAL_SECONDS,
+        repo_url: str | None = None,
+        ref: str = "HEAD",
     ) -> None:
         self.status_msg = status_msg
         self.flush_interval = flush_interval
+        # Optional active-repo subtitle, captured at LiveStatus
+        # construction time. Sourced from the ``Session.repo_url`` /
+        # ``Session.ref`` set when the channel had a binding via
+        # ``RepoConfig`` — see ``handlers._dispatch_and_respond``.
+        # ``None`` (the default) means "no repo bound" and the
+        # subtitle line is omitted entirely.
+        self.repo_url = repo_url
+        self.ref = ref
         self.transcript: list[dict[str, Any]] = []
         self._last_rendered: str | None = None
         self._dirty = False
@@ -230,7 +298,14 @@ class LiveStatus:
         """
         await self._stop_flush()
         footer = render_done(num_tools, duration_ms)
-        await self._safe_edit(_render(self.transcript, done_footer=footer))
+        await self._safe_edit(
+            _render(
+                self.transcript,
+                done_footer=footer,
+                repo_url=self.repo_url,
+                ref=self.ref,
+            )
+        )
 
     async def finalize_error(self) -> None:
         """Stop the flush loop and leave the status frozen on its last state.
@@ -240,7 +315,7 @@ class LiveStatus:
         before the error, not the last rate-limited flush.
         """
         await self._stop_flush()
-        await self._safe_edit(_render(self.transcript))
+        await self._safe_edit(_render(self.transcript, repo_url=self.repo_url, ref=self.ref))
 
     async def _flush_loop(self) -> None:
         while not self._stopped:
@@ -258,7 +333,7 @@ class LiveStatus:
                 logger.exception("streaming.flush_failed")
 
     async def _flush_once(self) -> None:
-        rendered = _render(self.transcript)
+        rendered = _render(self.transcript, repo_url=self.repo_url, ref=self.ref)
         if rendered == self._last_rendered:
             self._dirty = False
             return
