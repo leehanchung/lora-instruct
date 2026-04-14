@@ -129,7 +129,15 @@ Claude Code's schema drifts we have one place to fix.
 
 `run_claude_code` becomes a Modal **generator function**:
 
-- Change `--output-format text` → `--output-format stream-json`.
+- Keep the function in `app.py` — do not split it into a sibling
+  module. The file's module docstring explains why: `modal deploy`
+  imports `app.py` as a standalone script, so a sibling import would
+  re-register the decorator on a different `app` object. The
+  generator rewrite has to stay in-place.
+- Change `--output-format text` → `--output-format stream-json`. The
+  current cmd is `["claude", "--print", "-p", prompt, "--output-format",
+  "text"]`; only the last two entries flip, the `--print`/`-p prompt`
+  pair stays as-is.
 - Use `subprocess.Popen` instead of `subprocess.run` so we can read
   stdout line-by-line as Claude Code emits events.
 - For each line: `json.loads` it, run it through `_flatten_stream_event`,
@@ -137,7 +145,12 @@ Claude Code's schema drifts we have one place to fix.
 - On process exit, yield a final `DoneEvent` with the aggregated
   `final_text` and run stats.
 - If the subprocess exits with a non-zero code, yield an `ErrorEvent`
-  before returning.
+  before returning. **This is a behavior change from today.** The
+  current `run_claude_code` swallows nonzero exits and appends a
+  `[stderr]` tail to the returned string; under streaming, the bot
+  will instead surface an explicit error message (see the error path
+  in the handlers section). Call this out in the commit message so
+  it doesn't look like a silent regression.
 - Credential persistence (the volume commit after the run) still
   happens exactly once at the end, same as today.
 
@@ -147,12 +160,30 @@ Claude Code's schema drifts we have one place to fix.
 Modal's `.remote_gen.aio(...)` instead of `.remote(...)`:
 
 ```python
-async def run_task(self, ...) -> AsyncIterator[Event]:
+async def run_task(
+    self,
+    session_id: str,
+    workspace_path: str,
+    prompt: str,
+    *,
+    resume: bool = False,
+    attachments: list[tuple[str, bytes]] | None = None,
+    message_id: int | None = None,
+) -> AsyncIterator[Event]:
     async for event in self._fn.remote_gen.aio(
-        session_id=..., workspace_path=..., prompt=..., resume=...
+        session_id=session_id,
+        workspace_path=workspace_path,
+        prompt=prompt,
+        resume=resume,
+        attachments=attachments or [],
+        message_id=message_id,
     ):
         yield event
 ```
+
+The `attachments` / `message_id` kwargs already exist on the synchronous
+`run_task` today — preserve them verbatim when switching to the async
+generator, they're not optional cleanup.
 
 The synchronous-call-in-executor dance we have today goes away —
 `remote_gen.aio` is async-native.
@@ -162,6 +193,10 @@ The synchronous-call-in-executor dance we have today goes away —
 `_dispatch_and_respond` becomes a driver for the event stream:
 
 1. Post an initial `"💭 Thinking about your request..."` message.
+   This replaces the current `async with thread.typing():` wrapper —
+   the live status message *is* the progress indicator now, so the
+   typing-dots are redundant and actively misleading (they imply a
+   single final message is coming).
 2. Iterate `self.dispatcher.run_task(...)` (now an async iterator).
 3. Append each event to an in-memory transcript.
 4. A background coroutine (`_flush_loop`) edits the status message at

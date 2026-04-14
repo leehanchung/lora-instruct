@@ -13,8 +13,18 @@ registers the decorator on a different `app` object.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any
+
 import modal
 import structlog
+
+if TYPE_CHECKING:
+    # Imported for type-checking only. At runtime the generator yields plain
+    # dicts — keeping this off the runtime import graph avoids any chance of
+    # re-entering app.py through a sibling module during ``modal deploy``
+    # (see the module docstring for the full rationale).
+    from delulu_sandbox_modal.events import Event
 
 logger = structlog.get_logger()
 
@@ -56,6 +66,105 @@ sandbox_image = (
 claude_oauth_secret = modal.Secret.from_name("claude-oauth")
 
 
+# ── Stream-json helpers (module-level for testability) ───────
+# These parse Claude Code's ``--output-format stream-json`` lines into the
+# internal event dicts declared in ``events.py``. They live here rather
+# than in a sibling module because ``app.py`` is imported as ``__main__``
+# by ``modal deploy`` (see the module docstring); keeping helpers inline
+# avoids the double-import footgun that broke the previous layout.
+
+
+def _summarize_tool_input(tool: str, input_data: dict[str, Any]) -> str:
+    """Return a short one-liner describing a tool invocation for display."""
+    if tool in ("Read", "Edit", "Write"):
+        path = input_data.get("file_path") or ""
+        return f"`{path}`" if path else ""
+    if tool == "Bash":
+        cmd = input_data.get("command") or ""
+        return f"`{cmd[:80]}`" if cmd else ""
+    if tool in ("Grep", "Glob"):
+        pattern = input_data.get("pattern") or ""
+        return f"`{pattern}`" if pattern else ""
+    return ""
+
+
+def _summarize_tool_result(content: Any) -> str:
+    """Return a short preview of a tool result.
+
+    Claude Code's ``tool_result`` content may be a string, a list of
+    content blocks, or something else depending on CC version — parse
+    defensively.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        stripped = content.strip()
+        if not stripped:
+            return ""
+        first_line = stripped.splitlines()[0]
+        return (first_line[:80] + "…") if len(first_line) > 80 else first_line
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                return _summarize_tool_result(block.get("text"))
+        return ""
+    return str(content)[:80]
+
+
+def _flatten_stream_event(
+    parsed: dict[str, Any],
+    tool_names_by_id: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Map a Claude Code stream-json line to zero-or-more internal events.
+
+    Unknown event types are skipped. ``tool_names_by_id`` is mutated so
+    subsequent ``tool_result`` blocks can be labelled with their tool name.
+    """
+    out: list[dict[str, Any]] = []
+    kind = parsed.get("type")
+
+    if kind == "assistant":
+        message = parsed.get("message") or {}
+        for block in message.get("content") or []:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "text":
+                text = block.get("text") or ""
+                if text:
+                    out.append({"type": "text", "text": text})
+            elif btype == "tool_use":
+                tool_id = block.get("id") or ""
+                tool = block.get("name") or "?"
+                if tool_id:
+                    tool_names_by_id[tool_id] = tool
+                summary = _summarize_tool_input(tool, block.get("input") or {})
+                out.append({"type": "tool_use", "tool": tool, "summary": summary})
+            elif btype == "thinking":
+                thought = block.get("thinking") or ""
+                if thought:
+                    out.append({"type": "thinking", "text": thought})
+    elif kind == "user":
+        message = parsed.get("message") or {}
+        for block in message.get("content") or []:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_result":
+                tool_id = block.get("tool_use_id") or ""
+                tool = tool_names_by_id.get(tool_id, "")
+                is_error = bool(block.get("is_error"))
+                summary = _summarize_tool_result(block.get("content"))
+                out.append(
+                    {
+                        "type": "tool_result",
+                        "tool": tool,
+                        "ok": not is_error,
+                        "summary": summary,
+                    }
+                )
+    return out
+
+
 # ── Modal Function (runs inside the sandbox) ─────────────────
 @app.function(
     image=sandbox_image,
@@ -72,12 +181,21 @@ def run_claude_code(
     resume: bool = False,
     attachments: list[tuple[str, bytes]] | None = None,
     message_id: int | None = None,
-) -> str:
-    """Execute a Claude Code task inside an ephemeral Modal sandbox."""
+) -> Iterator[Event]:
+    """Execute a Claude Code task inside an ephemeral Modal sandbox.
+
+    This is a Modal **generator function**: callers invoke it via
+    ``.remote_gen(...)`` and receive an iterator of event dicts as
+    Claude Code progresses. A terminal ``DoneEvent`` carries the final
+    assistant text and run stats; on nonzero subprocess exit an
+    ``ErrorEvent`` is yielded instead and the function returns.
+    """
+    import json
     import os
     import re
     import shutil
     import subprocess
+    import threading
 
     os.makedirs(workspace_path, exist_ok=True)
 
@@ -142,7 +260,10 @@ def run_claude_code(
         "-p",
         prompt,
         "--output-format",
-        "text",
+        "stream-json",
+        # --output-format stream-json requires --verbose in Claude Code;
+        # without it, CC errors out before producing any events.
+        "--verbose",
     ]
     if resume:
         # --continue resumes the most recent Claude Code session in the cwd.
@@ -166,29 +287,108 @@ def run_claude_code(
         prompt_preview=prompt[:80],
     )
 
-    result = subprocess.run(
+    proc = subprocess.Popen(
         cmd,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         cwd=workspace_path,
         env=env,
-        timeout=280,
+        bufsize=1,
     )
 
-    if result.returncode != 0:
+    # Belt-and-suspenders wall clock kill. Modal's function-level timeout
+    # (300s) is the real ceiling; this matches the old subprocess.run
+    # timeout=280 so we surface a clean ErrorEvent before Modal reaps us.
+    killer = threading.Timer(280.0, proc.kill)
+    killer.daemon = True
+    killer.start()
+
+    tool_names_by_id: dict[str, str] = {}
+    accumulated_text: list[str] = []
+    final_text = ""
+    num_turns = 0
+    duration_ms = 0
+
+    # Drain stderr concurrently so the subprocess never blocks trying to write
+    # to a full pipe while we're still reading stdout.  Without this, verbose
+    # Claude Code output (~64 KB+ on stderr) can deadlock the generator until
+    # the 280 s kill timer fires.
+    stderr_lines: list[str] = []
+
+    def _drain_stderr() -> None:
+        if proc.stderr is not None:
+            for _line in proc.stderr:
+                stderr_lines.append(_line)
+
+    stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+    stderr_thread.start()
+
+    try:
+        assert proc.stdout is not None
+        for raw_line in proc.stdout:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                logger.warning("sandbox.stream_json.malformed", preview=line[:200])
+                continue
+
+            kind = parsed.get("type")
+
+            if kind == "result":
+                final_text = parsed.get("result") or "".join(accumulated_text)
+                try:
+                    num_turns = int(parsed.get("num_turns") or 0)
+                except (TypeError, ValueError):
+                    num_turns = 0
+                try:
+                    duration_ms = int(parsed.get("duration_ms") or 0)
+                except (TypeError, ValueError):
+                    duration_ms = 0
+                continue
+
+            if kind == "system":
+                continue
+
+            for event in _flatten_stream_event(parsed, tool_names_by_id):
+                if event["type"] == "text":
+                    accumulated_text.append(event["text"])
+                yield event  # type: ignore[misc]
+
+        returncode = proc.wait()
+        stderr_thread.join()
+        stderr_text = "".join(stderr_lines)
+    finally:
+        killer.cancel()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        # Persist everything Claude Code wrote: rotated refresh tokens, new
+        # session history files, any settings updates. Must be inside finally
+        # so it runs even when the caller abandons the generator (GeneratorExit
+        # is thrown at a yield), preventing loss of OAuth tokens and session
+        # history on mid-stream cancellation.
+        volume.commit()
+
+    if returncode != 0:
         logger.warning(
             "sandbox.nonzero_exit",
             session_id=session_id,
-            returncode=result.returncode,
-            stderr=result.stderr[:500],
+            returncode=returncode,
+            stderr=stderr_text[:500],
         )
+        yield {
+            "type": "error",
+            "message": (f"Claude Code exited with code {returncode}: {stderr_text.strip()[:500]}"),
+        }
+        return
 
-    # Persist everything Claude Code wrote: rotated refresh tokens, new
-    # session history files, any settings updates.
-    volume.commit()
-
-    output = result.stdout.strip()
-    if result.returncode != 0 and result.stderr.strip():
-        output += f"\n\n[stderr]\n{result.stderr.strip()}"
-
-    return output
+    yield {
+        "type": "done",
+        "final_text": final_text or "".join(accumulated_text),
+        "num_turns": num_turns,
+        "duration_ms": duration_ms,
+    }
