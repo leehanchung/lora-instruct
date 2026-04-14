@@ -301,16 +301,29 @@ def run_claude_code(
                 "run_claude_code requires either `workspace_path` (legacy) or "
                 "`thread_id` (for provision_workspace.remote). Got neither."
             )
-        workspace_path = provision_workspace.remote(
-            thread_id=thread_id,
-            repo_url=repo_url,
-            ref=ref,
-        )
-        # The provisioning function committed the volume. Reload so
-        # this container sees the newly-created worktree on its
-        # mounted view of /vol — without this, the cwd we're about
-        # to use doesn't exist from this container's perspective.
-        volume.reload()
+        if repo_url is None:
+            # **Fast path: no-repo / general-Q&A mode.** When there's
+            # no repo to provision, there's nothing for the
+            # max_containers=1 serialization to coordinate — every
+            # call would just `os.makedirs` an empty directory in
+            # its own private container. Skip the Modal function hop
+            # entirely and create the workspace inline. Saves the
+            # ~1–2s per-dispatch orchestration overhead for the
+            # common no-binding case (which is every channel until
+            # Phase 3 ships /setrepo).
+            workspace_path = f"/vol/workspaces/{thread_id}"
+        else:
+            workspace_path = provision_workspace.remote(
+                thread_id=thread_id,
+                repo_url=repo_url,
+                ref=ref,
+            )
+            # The provisioning function committed the volume. Reload
+            # so this container sees the newly-created worktree on
+            # its mounted view of /vol — without this, the cwd we're
+            # about to use doesn't exist from this container's
+            # perspective.
+            volume.reload()
 
     os.makedirs(workspace_path, exist_ok=True)
 

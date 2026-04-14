@@ -11,6 +11,7 @@ from delulu_discord.streaming import INITIAL_PLACEHOLDER, LiveStatus
 
 if TYPE_CHECKING:
     from delulu_discord.dispatcher import SandboxDispatcher
+    from delulu_discord.repo_config import RepoConfig
     from delulu_discord.session_manager import SessionManager
     from delulu_discord.settings import Settings
 
@@ -25,17 +26,35 @@ class MessageHandler:
         settings: Settings,
         session_manager: SessionManager,
         dispatcher: SandboxDispatcher,
+        repo_config: RepoConfig,
     ) -> None:
         self.settings = settings
         self.sessions = session_manager
         self.dispatcher = dispatcher
+        self.repo_config = repo_config
 
     async def handle_channel_message(self, message: discord.Message, prompt: str) -> None:
-        """New @-mention in a channel → create thread, dispatch task."""
+        """New @-mention in a channel → create thread, dispatch task.
+
+        Looks up the channel's repo binding via ``RepoConfig.get()``
+        — if the channel is bound, the new session is created with
+        the (repo_url, ref) tuple, which the sandbox's
+        ``provision_workspace`` will use to clone+worktree the repo.
+        If unbound (the current default for every channel until
+        Phase 3 ships ``/setrepo``), the session has ``repo_url=None``
+        and the sandbox falls through to the empty-workspace
+        general-Q&A path.
+        """
         thread_name = prompt[:50].strip() or "Claude Code task"
         thread = await message.create_thread(name=thread_name)
 
-        session = self.sessions.create_session(thread.id)
+        binding = self.repo_config.get(message.channel.id)
+        if binding is None:
+            repo_url, ref = None, self.settings.default_git_ref
+        else:
+            repo_url, ref = binding
+
+        session = self.sessions.create_session(thread.id, repo_url=repo_url, ref=ref)
         attachments = await _download_attachments(message)
 
         logger.info(
@@ -44,6 +63,8 @@ class MessageHandler:
             session_id=session.session_id,
             prompt_preview=prompt[:80],
             attachment_count=len(attachments),
+            repo_url=repo_url,
+            ref=ref,
         )
 
         await self._dispatch_and_respond(
@@ -114,8 +135,10 @@ class MessageHandler:
         try:
             async for event in self.dispatcher.run_task(
                 session_id=session.session_id,
-                workspace_path=session.workspace_path,
+                thread_id=session.thread_id,
                 prompt=prompt,
+                repo_url=session.repo_url,
+                ref=session.ref,
                 resume=resume,
                 attachments=attachments,
                 message_id=message_id,

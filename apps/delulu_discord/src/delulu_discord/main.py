@@ -11,6 +11,7 @@ import structlog
 
 from delulu_discord.dispatcher import SandboxDispatcher
 from delulu_discord.handlers import MessageHandler
+from delulu_discord.repo_config import RepoConfig
 from delulu_discord.session_manager import SessionManager
 from delulu_discord.settings import Settings
 
@@ -34,10 +35,16 @@ def create_bot(settings: Settings) -> discord.Client:
     # ── Wire up components ───────────────────────────────────
     session_manager = SessionManager(ttl_seconds=settings.session_ttl_seconds)
     dispatcher = SandboxDispatcher(settings=settings)
+    # RepoConfig instantiates a modal.Dict at startup. Empty until
+    # the /setrepo command (Phase 3) lets users add bindings; until
+    # then `repo_config.get(channel_id)` always returns None and
+    # every dispatch falls through to the no-repo general-Q&A path.
+    repo_config = RepoConfig()
     handler = MessageHandler(
         settings=settings,
         session_manager=session_manager,
         dispatcher=dispatcher,
+        repo_config=repo_config,
     )
 
     # ── Event handlers ───────────────────────────────────────
