@@ -174,6 +174,13 @@ def link_worker(worker_id: int) -> dict[str, Any]:
     ``os.link(src, lock_path)`` until the link succeeds. POSIX says
     link to an existing name raises EEXIST and the operation is
     atomic at the filesystem level on local filesystems.
+
+    On Modal Volumes, ``os.link`` raises ``PermissionError`` (EPERM)
+    — the volume backend doesn't support hard links at all. We
+    surface that as a distinct ``unsupported`` result rather than
+    crashing, so the scout can still print its summary and the
+    evidence is clearly attributed to the primitive being
+    unavailable rather than to atomicity failing.
     """
     os.makedirs(SCOUT_DIR, exist_ok=True)
 
@@ -182,12 +189,23 @@ def link_worker(worker_id: int) -> dict[str, Any]:
         f.write(str(worker_id))
 
     wait_start = time.time()
-    while True:
-        try:
-            os.link(src_path, LINK_PATH)
-            break
-        except FileExistsError:
-            time.sleep(POLL_INTERVAL_SECONDS)
+    try:
+        while True:
+            try:
+                os.link(src_path, LINK_PATH)
+                break
+            except FileExistsError:
+                time.sleep(POLL_INTERVAL_SECONDS)
+    except PermissionError as exc:
+        # os.link not supported by the volume filesystem — report
+        # back as unsupported so _run_test emits an UNSUPPORTED
+        # verdict instead of raising.
+        os.unlink(src_path)
+        return {
+            "worker_id": worker_id,
+            "unsupported": True,
+            "error": f"{exc.__class__.__name__}: {exc}",
+        }
     enter_time = time.time()
     wait_seconds = enter_time - wait_start
 
@@ -206,7 +224,7 @@ def link_worker(worker_id: int) -> dict[str, Any]:
 
 
 def _run_test(name: str, worker_fn: Any) -> str:
-    """Run one race test, print the result, return PASS|FAIL|SUSPICIOUS."""
+    """Run one race test, print the result, return PASS|FAIL|SUSPICIOUS|UNSUPPORTED."""
     print(f"▶  [{name}] Clearing scout state...")
     clear_state.remote()
 
@@ -214,6 +232,17 @@ def _run_test(name: str, worker_fn: Any) -> str:
     wall_start = time.time()
     results = list(worker_fn.map(range(NUM_WORKERS)))
     total_wall = time.time() - wall_start
+
+    # If any worker reports unsupported (e.g. os.link EPERM on the
+    # volume backend), the primitive itself isn't usable — emit
+    # UNSUPPORTED and skip the timing analysis entirely.
+    unsupported = [r for r in results if r.get("unsupported")]
+    if unsupported:
+        first_error = unsupported[0].get("error", "unknown")
+        print(f"   ⛔ [{name}] UNSUPPORTED — primitive not available on this volume")
+        print(f"                {first_error}")
+        print()
+        return "UNSUPPORTED"
 
     results.sort(key=lambda r: r["enter_time"])
     earliest_enter = min(r["enter_time"] for r in results)
@@ -275,8 +304,14 @@ def verify() -> None:
     print("─" * 60)
     print("SUMMARY")
     print("─" * 60)
+    verdict_icon = {
+        "PASS": "✅",
+        "FAIL": "❌",
+        "SUSPICIOUS": "⚠️",
+        "UNSUPPORTED": "⛔",
+    }
     for primitive, verdict in results.items():
-        icon = "✅" if verdict == "PASS" else "❌" if verdict == "FAIL" else "⚠️"
+        icon = verdict_icon.get(verdict, "?")
         print(f"  {icon} {primitive:<15} {verdict}")
     print()
 
@@ -290,10 +325,13 @@ def verify() -> None:
         print("  Modal Volume architecture (commit/reload sync, not live")
         print("  shared filesystem).")
         print()
-        print("  Pivot to `modal.Dict` for cross-container coordination.")
-        print("  Update the PRD's Concurrency section to document the")
-        print("  Modal Dict-based approach and remove the `fcntl.flock` /")
-        print("  `os.link` fallback references.")
+        print("  Pivot to Modal's own orchestration primitives. Options:")
+        print("  - `@app.function(max_containers=1)` on a dedicated")
+        print("    provisioning function for global serialization")
+        print("  - `modal.Dict` with CAS-style put-if-absent for per-key")
+        print("    locks (requires verifying the API supports atomic CAS)")
+        print()
+        print("  Update the PRD's Concurrency section accordingly.")
 
     print()
     print("▶  Cleaning up scout state...")
