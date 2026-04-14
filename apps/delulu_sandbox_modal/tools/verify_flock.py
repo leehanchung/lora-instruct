@@ -286,7 +286,10 @@ def _run_test(name: str, worker_fn: Any) -> str:
     else:
         verdict = "SUSPICIOUS"
         print(f"   ⚠️  [{name}] SUSPICIOUS — enter/exit ordering looks clean but total")
-        print(f"                wall clock ({total_wall:.2f}s) < expected minimum ({expected_min_wall:.2f}s).")
+        print(
+            f"                wall clock ({total_wall:.2f}s) < expected minimum "
+            f"({expected_min_wall:.2f}s)."
+        )
         print("                Re-run with more workers or longer HOLD_SECONDS.")
     print()
     return verdict
@@ -318,7 +321,7 @@ def verify() -> None:
     passes = [p for p, v in results.items() if v == "PASS"]
     if passes:
         print(f"  Working primitive(s): {', '.join(passes)}")
-        print(f"  Use the first one in `repo_provisioner.py`.")
+        print("  Use the first one in `repo_provisioner.py`.")
     else:
         print("  No filesystem primitive provides cross-container mutual")
         print("  exclusion on Modal Volumes. This is consistent with the")
