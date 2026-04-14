@@ -71,15 +71,23 @@ jobs:
           # message) when the reviewer comment doesn't show up on a PR.
           # Flip back to false once review behavior is stable.
           show_full_output: true
-          # Whitelist only `gh pr review` so the agent can submit PR
-          # reviews. Claude Code's default bash allowlist blocks
-          # everything; without this, every `gh pr review --approve` call
-          # comes back as a permission_denial and the bot silently fails
-          # to post anything. Reading PR metadata/diff works via the
-          # default-allowed WebFetch tool against the GitHub REST API, so
-          # we don't need to whitelist `gh pr view`. Prefix-match syntax:
-          # Bash(<prefix>:*) matches any command beginning with <prefix>.
-          claude_args: --allowedTools "Bash(gh pr review:*)"
+          # Whitelist the tools needed to submit a PR review:
+          #   - Bash(gh pr review:*): the actual review submission.
+          #     Narrow prefix match; no other gh subcommands are allowed.
+          #   - Write: lets the agent drop the review body into a
+          #     temp file (see prompt) so we can use `gh pr review
+          #     --body-file` instead of inline `--body "..."`. The
+          #     inline form collides with bash quoting whenever the
+          #     review body contains code fences or backticks, and
+          #     the agent ends up retrying with progressively
+          #     shorter bodies — polluting the review history with
+          #     4-5 reviews per run. Using a file sidesteps that
+          #     entirely.
+          #
+          # Reading PR metadata/diff still works via the default-
+          # allowed WebFetch tool against the GitHub REST API, so we
+          # don't need to whitelist `gh pr view`.
+          claude_args: --allowedTools "Write,Bash(gh pr review:*)"
           prompt: |
             You are reviewing a pull request in the SMILE-factory monorepo.
 
@@ -118,20 +126,33 @@ jobs:
 
             Be concise. Do not manufacture feedback to fill space.
 
-            **You MUST end every run by submitting exactly one PR review
-            via the `gh` CLI — never exit without submitting one.** This
-            makes you appear in the Reviewers box with an explicit state
-            rather than leaving an ambiguous plain comment. Use the PR
-            number from `${{ github.event.pull_request.number }}`.
+            **Submit exactly ONE PR review at the end of the run.
+            Never retry on apparent failure — one attempt, one
+            outcome.** Duplicate reviews pollute the PR history and
+            block merge. The PR number is `${{ github.event.pull_request.number }}`.
 
-            - No substantive issues → `gh pr review <N> --approve --body "<short summary>"`
-            - Issues that must be fixed before merge → `gh pr review <N> --request-changes --body "<findings>"`
-            - Observations worth flagging but not blocking → `gh pr review <N> --comment --body "<findings>"`
+            **How to submit** — use the `Write` tool to save your
+            review body to `/tmp/review.md`, then call `gh pr review`
+            with `--body-file`. Do **not** pass the body inline via
+            `--body "..."`: markdown with code fences, backticks,
+            and newlines collides with bash quoting, the first
+            attempt gets mangled, and any retry pollutes the review
+            history.
 
-            If `gh pr review --approve` fails with a "cannot approve your
-            own pull request" error, fall back to `--comment` with the
-            same body — that happens when the PR author is the same
-            identity the workflow runs as.
+            Pick exactly one of the three subcommands based on
+            severity:
+
+            - No substantive issues →
+              `gh pr review <N> --approve         --body-file /tmp/review.md`
+            - Issues that must be fixed before merge →
+              `gh pr review <N> --request-changes --body-file /tmp/review.md`
+            - Observations worth flagging but not blocking →
+              `gh pr review <N> --comment         --body-file /tmp/review.md`
+
+            If `gh pr review --approve` fails with a "cannot approve
+            your own pull request" error, fall back to `--comment`
+            with the same body file (one retry maximum, only for
+            this specific error — never retry for any other reason).
 
   fix:
     # On-demand fix flow: someone comments `@claude <request>` on a PR.
