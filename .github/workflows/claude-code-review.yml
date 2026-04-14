@@ -54,6 +54,24 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Allow claude[bot] as a triggering actor. The action's
+          # default `allowed_bots: ""` rejects any event triggered by
+          # a bot as a prompt-injection defense. That's correct for
+          # untrusted bots, but rejects our own fix-job re-review
+          # flow: when claude.yml pushes a fix commit to a PR, the
+          # resulting `pull_request synchronize` event has
+          # `github.actor == 'claude[bot]'`, and without this line
+          # the review job fails at startup with "Workflow initiated
+          # by non-human actor". That would block the whole "fix,
+          # then re-review and approve" loop.
+          #
+          # Safe in our case: the prompt is fixed by us (the bot
+          # doesn't control instructions), and the diff content is
+          # still under human control (human authored the PR, bot
+          # only pushed a commit the human explicitly requested via
+          # @claude). Keeping the list narrow to claude[bot] only so
+          # other bots (dependabot etc.) still require manual review.
+          allowed_bots: "claude[bot]"
           # Surface the agent's full stdout/stderr in workflow logs so we
           # can see what the review agent actually did (tool calls, final
           # message) when the reviewer comment doesn't show up on a PR.
