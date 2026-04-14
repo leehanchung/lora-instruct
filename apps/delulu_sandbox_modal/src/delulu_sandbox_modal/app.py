@@ -165,6 +165,80 @@ def _flatten_stream_event(
     return out
 
 
+# ── Provisioning Modal Function ──────────────────────────────
+# Dedicated function for git operations (clone, fetch, worktree add).
+# `max_containers=1` is load-bearing: it's how we get cross-container
+# mutual exclusion on provisioning without writing any lock code. The
+# flock scout at `tools/verify_flock.py` empirically confirmed that no
+# filesystem lock primitive (flock, mkdir, link) provides cross-
+# container atomicity on Modal Volumes, so concurrency has to live at
+# Modal's orchestration layer instead. See the "Concurrency" section
+# of `prd/repo-provisioning.md` for the full rationale.
+#
+# The image intentionally omits nodejs/claude-code — this function
+# only needs git, and reusing `sandbox_image` would pull in the
+# ~200MB Claude Code install on every provisioning container spin-up.
+provisioner_image = (
+    modal.Image.debian_slim(python_version="3.14")
+    .apt_install("git", "ca-certificates")
+    .pip_install("structlog>=24.0")
+)
+
+
+@app.function(
+    image=provisioner_image,
+    volumes={"/vol": volume},
+    max_containers=1,
+    timeout=300,
+)
+def provision_workspace(
+    thread_id: int,
+    repo_url: str | None,
+    ref: str = "HEAD",
+) -> str:
+    """Ensure a workspace exists at ``/vol/workspaces/<thread_id>`` and return its path.
+
+    Called via ``.remote()`` from ``run_claude_code``. Modal's
+    `max_containers=1` serializes all concurrent invocations of this
+    function at the orchestration layer, so the underlying git work
+    runs without any locking primitive of its own.
+
+    Commits the volume before returning so the caller's subsequent
+    ``volume.reload()`` picks up the newly-created worktree.
+    """
+    # Import inside the function body so the top-level module import
+    # of `app.py` doesn't pull in repo_provisioner at deploy-parse
+    # time. (Not strictly necessary — repo_provisioner has no Modal
+    # decorators and is safe to import at module level — but keeping
+    # heavyweight imports lazy matches the existing pattern in
+    # `run_claude_code` and avoids any surprise at `modal deploy`.)
+    from delulu_sandbox_modal import repo_provisioner
+
+    workspace_path, timings = repo_provisioner.provision_workspace(
+        thread_id=thread_id,
+        repo_url=repo_url,
+        ref=ref,
+    )
+
+    logger.info(
+        "provision.timing",
+        thread_id=thread_id,
+        repo_url=repo_url,
+        ref=ref,
+        workspace_path=workspace_path,
+        total_ms=timings.total_ms,
+        cold_clone_ms=timings.cold_clone_ms,
+        fetch_ms=timings.fetch_ms,
+        worktree_ms=timings.worktree_ms,
+        short_circuit=timings.short_circuit,
+    )
+
+    # Commit so the caller (`run_claude_code` in its own container)
+    # can `volume.reload()` and see the fresh worktree + bare cache.
+    volume.commit()
+    return workspace_path
+
+
 # ── Modal Function (runs inside the sandbox) ─────────────────
 @app.function(
     image=sandbox_image,
@@ -175,9 +249,12 @@ def _flatten_stream_event(
 )
 def run_claude_code(
     session_id: str,
-    workspace_path: str,
     prompt: str,
     *,
+    workspace_path: str | None = None,
+    thread_id: int | None = None,
+    repo_url: str | None = None,
+    ref: str = "HEAD",
     resume: bool = False,
     attachments: list[tuple[str, bytes]] | None = None,
     message_id: int | None = None,
@@ -189,6 +266,26 @@ def run_claude_code(
     Claude Code progresses. A terminal ``DoneEvent`` carries the final
     assistant text and run stats; on nonzero subprocess exit an
     ``ErrorEvent`` is yielded instead and the function returns.
+
+    Workspace derivation — two paths, transitional during the
+    repo-provisioning rollout:
+
+    1.  **Legacy (Phase 1):** caller passes ``workspace_path``
+        directly (current bot behavior). Used as-is, no provisioning
+        call. Keeps the bot side working without changes while Phase
+        2 rewires `dispatcher.run_task` to pass `thread_id` instead.
+
+    2.  **New (Phase 2+):** caller passes ``thread_id`` (and
+        optionally ``repo_url`` / ``ref``). The sandbox derives the
+        workspace via ``provision_workspace.remote(...)``, which
+        handles the bare-cache clone, fetch, and worktree creation
+        under Modal's ``max_containers=1`` serialization. The
+        subsequent ``volume.reload()`` picks up the committed state
+        so this container sees the fresh worktree.
+
+    Once Phase 2 lands, the ``workspace_path`` kwarg can be removed
+    in a follow-up — keeping it now minimizes the blast radius of
+    the signature change.
     """
     import json
     import os
@@ -196,6 +293,24 @@ def run_claude_code(
     import shutil
     import subprocess
     import threading
+
+    # ── Workspace derivation ────────────────────────────────
+    if workspace_path is None:
+        if thread_id is None:
+            raise ValueError(
+                "run_claude_code requires either `workspace_path` (legacy) or "
+                "`thread_id` (for provision_workspace.remote). Got neither."
+            )
+        workspace_path = provision_workspace.remote(
+            thread_id=thread_id,
+            repo_url=repo_url,
+            ref=ref,
+        )
+        # The provisioning function committed the volume. Reload so
+        # this container sees the newly-created worktree on its
+        # mounted view of /vol — without this, the cwd we're about
+        # to use doesn't exist from this container's perspective.
+        volume.reload()
 
     os.makedirs(workspace_path, exist_ok=True)
 
