@@ -77,92 +77,18 @@ jobs:
           # message) when the reviewer comment doesn't show up on a PR.
           # Flip back to false once review behavior is stable.
           show_full_output: true
-          # Whitelist the tools needed to submit a PR review:
-          #   - Bash(gh pr review:*): the actual review submission.
-          #     Narrow prefix match; no other gh subcommands are allowed.
-          #   - Write: lets the agent drop the review body into a temp
-          #     file so we can use `gh pr review --body-file` instead
-          #     of inline `--body "..."`. The inline form collides
-          #     with bash quoting whenever the review body contains
-          #     code fences or backticks, and the agent ends up
-          #     retrying with progressively shorter bodies — polluting
-          #     the review history with 4-5 reviews per run. File-
-          #     based submission sidesteps that entirely.
+          # Load our local code-review plugin from this repo's
+          # `.claude-plugin/marketplace.json`. The plugin's slash
+          # command lives at `plugins/code-review/commands/code-review.md`
+          # and its allowed tools (Write, WebFetch, Bash(gh pr review:*))
+          # are declared in that file's frontmatter.
           #
-          # Reading PR metadata/diff works via the default-allowed
-          # WebFetch tool against the GitHub REST API, so we don't
-          # need to whitelist `gh pr view`.
-          claude_args: --allowedTools "Write,Bash(gh pr review:*)"
-          prompt: |
-            You are reviewing a pull request in the SMILE-factory monorepo.
-
-            The active project is the **delulu Discord orchestrator** under
-            `apps/delulu_discord` (bot, runs in Docker on a VPS) and
-            `apps/delulu_sandbox_modal` (Modal sandbox function that runs
-            Claude Code). The root also contains archived LoRA-Instruct
-            fine-tuning code — lower priority for review unless the PR
-            explicitly touches it.
-
-            Focus your review on, in priority order:
-              1. **Correctness** — actual bugs, broken flows, missing
-                 error handling at system boundaries (Discord gateway,
-                 Modal dispatch, subprocess exec).
-              2. **Security** — credential handling, path traversal in the
-                 attachment-write path, subprocess argument injection,
-                 anything that widens the Modal sandbox's blast radius.
-              3. **Boundary invariants** — the bot must never import from
-                 `delulu_sandbox_modal` (they're deployed separately); the
-                 sandbox must never import bot-side Discord types. Flag any
-                 cross-boundary imports.
-              4. **Deployment impact** — changes under
-                 `apps/delulu_sandbox_modal/` require a Modal redeploy;
-                 changes under `apps/delulu_discord/` require a bot
-                 container rebuild. Flag if the PR description or commit
-                 messages don't mention which side is affected.
-              5. **Test coverage gaps** — note missing tests, but don't
-                 block on them (the project has minimal test infrastructure
-                 today).
-
-            Do **not** comment on:
-              - Style nits that ruff would catch (ruff runs in pre-commit)
-              - Documentation wording unless it's factually wrong
-              - Changes to PRDs under `prd/` — those are planning docs,
-                not production code
-
-            Be concise. Do not manufacture feedback to fill space.
-
-            **Your review is advisory, not blocking.** You have exactly
-            two outcomes to choose from:
-
-            - No substantive issues → `--approve`
-            - Anything else (observations, concerns, questions, bugs
-              you want a human to confirm) → `--comment`
-
-            Do **NOT** use `--request-changes`. A request-changes review
-            gives your individual judgment a hard veto over merges, and
-            you can be wrong. Findings you think are important still go
-            in the `--comment` body — the human reviewer decides whether
-            they block merge. Approve-or-comment is the right shape for
-            an AI code reviewer.
-
-            **Submit exactly ONE PR review at the end of the run.
-            Never retry on apparent failure — one attempt, one
-            outcome.** Duplicate reviews pollute the PR history. The
-            PR number is `${{ github.event.pull_request.number }}`.
-
-            **How to submit** — use the `Write` tool to save your
-            review body to `/tmp/review.md`, then call `gh pr review`
-            with `--body-file`. Do **not** pass the body inline via
-            `--body "..."`: markdown with code fences, backticks, and
-            newlines collides with bash quoting, the first attempt
-            gets mangled, and any retry pollutes the review history.
-
-            - No substantive issues →
-              `gh pr review <N> --approve --body-file /tmp/review.md`
-            - Issues / observations / questions →
-              `gh pr review <N> --comment --body-file /tmp/review.md`
-
-            If `gh pr review --approve` fails with a "cannot approve
-            your own pull request" error, fall back to `--comment`
-            with the same body file (one retry maximum, only for this
-            specific error — never retry for any other reason).
+          # Gotcha: claude-code-action fetches the plugin from the
+          # default branch of the URL, NOT from the checked-out tree.
+          # So edits to `plugins/code-review/` on a PR branch won't be
+          # exercised by that same PR's review. Changes take effect
+          # only after they land on `main` — same self-validation
+          # caveat as the workflow files themselves.
+          plugin_marketplaces: 'https://github.com/leehanchung/SMILE-factory.git'
+          plugins: 'code-review@smile-factory'
+          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
