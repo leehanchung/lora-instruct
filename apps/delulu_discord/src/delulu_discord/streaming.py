@@ -255,7 +255,7 @@ class LiveStatus:
         task.cancel()
         try:
             await task
-        except asyncio.CancelledError, Exception:
+        except (asyncio.CancelledError, Exception):
             pass
         self._flush_task = None
 
