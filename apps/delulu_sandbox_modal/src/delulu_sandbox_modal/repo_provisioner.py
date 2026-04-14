@@ -160,7 +160,7 @@ def _parse_repo_url(repo_url: str) -> tuple[str, str, str]:
 
     if url.startswith("git@"):
         # git@host:owner/repo
-        rest = url[len("git@"):]
+        rest = url[len("git@") :]
         host, sep, path = rest.partition(":")
         if not sep:
             raise ValueError(f"cannot parse SSH git URL: {repo_url!r}")
