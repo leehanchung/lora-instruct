@@ -1,4 +1,4 @@
-.PHONY: help sync sync-dev lint fmt check modal-deploy
+.PHONY: help sync sync-dev lint fmt check test modal-deploy
 
 MODAL_IMAGE_BUILDER_VERSION ?= 2025.06
 
@@ -7,6 +7,7 @@ help:
 	@echo "  make sync          uv sync runtime deps"
 	@echo "  make sync-dev      uv sync runtime + dev deps"
 	@echo "  make check         ruff check + format --check"
+	@echo "  make test          pytest"
 	@echo "  make lint          ruff check --fix"
 	@echo "  make fmt           ruff format"
 	@echo "  make modal-deploy  deploy the Modal sandbox app"
@@ -29,6 +30,9 @@ lint: sync-dev
 
 fmt: sync-dev
 	uv run ruff format .
+
+test: sync-dev
+	uv run pytest
 
 modal-deploy: sync
 	MODAL_IMAGE_BUILDER_VERSION=$(MODAL_IMAGE_BUILDER_VERSION) \
