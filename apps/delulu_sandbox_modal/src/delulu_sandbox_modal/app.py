@@ -53,6 +53,14 @@ sandbox_image = (
         # Install Claude Code globally
         "npm install -g @anthropic-ai/claude-code",
     )
+    # Bundle the whole `delulu_sandbox_modal` package into the image so
+    # that runtime `from delulu_sandbox_modal import repo_provisioner`
+    # resolves inside the container. `modal deploy` only auto-mounts
+    # the entry file (app.py) at /root/app.py by default — sibling
+    # modules in the same package have to be added explicitly. Without
+    # this line, provision_workspace crashes at import time with
+    # `ModuleNotFoundError: No module named 'delulu_sandbox_modal'`.
+    .add_local_python_source("delulu_sandbox_modal")
 )
 
 # ── Secrets ──────────────────────────────────────────────────
@@ -205,6 +213,10 @@ provisioner_image = (
     modal.Image.debian_slim(python_version="3.14")
     .apt_install("git", "ca-certificates")
     .pip_install("structlog>=24.0")
+    # Same rationale as sandbox_image above — provision_workspace
+    # and commit_workspace both import `repo_provisioner` at
+    # runtime, so the package has to be in the container.
+    .add_local_python_source("delulu_sandbox_modal")
 )
 
 
