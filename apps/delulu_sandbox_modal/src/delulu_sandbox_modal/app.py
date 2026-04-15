@@ -42,7 +42,7 @@ sandbox_image = (
     # builder only supports Python 3.10–3.12. Set workspace-wide with:
     #   modal config set image_builder_version 2025.06
     modal.Image.debian_slim(python_version="3.14")
-    .apt_install("git", "curl")
+    .apt_install("git", "curl", "ca-certificates")
     # app.py is imported inside the sandbox to call run_claude_code, so any
     # third-party module it imports at module level must be present here too.
     .pip_install("structlog>=24.0")
@@ -52,6 +52,25 @@ sandbox_image = (
         "apt-get install -y nodejs",
         # Install Claude Code globally
         "npm install -g @anthropic-ai/claude-code",
+        # Install the GitHub CLI (`gh`) so Claude can push branches,
+        # open pull requests, list issues, etc. directly via its Bash
+        # tool when the user asks for things like "commit and open a
+        # PR." Uses GitHub's official apt repo — shorter install path
+        # than downloading the .deb manually and also gets security
+        # updates via `apt upgrade` on future image rebuilds.
+        "mkdir -p -m 755 /etc/apt/keyrings",
+        (
+            "curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg "
+            "| tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null "
+            "&& chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg"
+        ),
+        (
+            'echo "deb [arch=$(dpkg --print-architecture) '
+            "signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] "
+            'https://cli.github.com/packages stable main" '
+            "| tee /etc/apt/sources.list.d/github-cli.list > /dev/null"
+        ),
+        "apt-get update && apt-get install -y gh",
     )
     # Bundle the whole `delulu_sandbox_modal` package into the image so
     # that runtime `from delulu_sandbox_modal import repo_provisioner`
@@ -376,10 +395,24 @@ def commit_workspace(thread_id: int, message: str) -> dict[str, Any]:
 
 
 # ── Modal Function (runs inside the sandbox) ─────────────────
+# `github_pat_secret` is attached here (in addition to
+# `commit_workspace`) so Claude can natively use `git push` and
+# `gh pr create` via its Bash tool when the user asks for things
+# like "commit and open a PR." Previously the PAT was only
+# available in the dedicated /commit flow; expanding access lets
+# the @claude natural-language path handle the full branch →
+# commit → push → PR loop without a slash command.
+#
+# Security note: the PAT becomes visible to any `run_claude_code`
+# invocation, not just `commit_workspace`. A rogue/prompt-injected
+# Claude has access to anything the PAT can do on the allowlisted
+# repos. For the v1 single-user scope this is acceptable; see
+# `prd/repo-provisioning.md`'s access-control section for why the
+# allowlist + narrow PAT scope is the primary defense.
 @app.function(
     image=sandbox_image,
     volumes={"/vol": volume},
-    secrets=[claude_oauth_secret],
+    secrets=[claude_oauth_secret, github_pat_secret],
     memory=4096,
     timeout=300,
 )
@@ -593,6 +626,28 @@ def run_claude_code(
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
     env["HOME"] = claude_home
     env["CLAUDE_PROJECT_DIR"] = workspace_path
+
+    # Surface the GitHub PAT to `gh` CLI and `git`. The `github-pat`
+    # Modal secret sets `GITHUB_TOKEN` in the container; `gh` also
+    # reads `GH_TOKEN` and prefers it. Setting both covers every
+    # codepath Claude's Bash tool might reach for (gh pr create,
+    # git push over HTTPS, etc.). If the secret value is a
+    # placeholder or empty, these env vars will be empty strings —
+    # gh/git will then refuse with their own clean error messages
+    # rather than accidentally authenticating as nobody.
+    github_token = env.get("GITHUB_TOKEN", "").strip()
+    if github_token and github_token != "placeholder":
+        env["GH_TOKEN"] = github_token
+        # Re-assign GITHUB_TOKEN in case the secret value had
+        # trailing whitespace — both gh and git are sensitive to that.
+        env["GITHUB_TOKEN"] = github_token
+    else:
+        # Scrub placeholder/empty values so `gh auth status` and
+        # `git push` fail cleanly with "not authenticated" instead
+        # of trying to use the literal string "placeholder" as a
+        # credential and getting a confusing 401.
+        env.pop("GH_TOKEN", None)
+        env.pop("GITHUB_TOKEN", None)
 
     logger.info(
         "sandbox.exec",
