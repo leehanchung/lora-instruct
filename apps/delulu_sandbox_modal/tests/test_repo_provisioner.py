@@ -127,21 +127,29 @@ class TestParseRepoUrl:
 class TestBuildPushUrlWithPat:
     """URL-embedded PAT credentials for the /commit push path.
 
-    Replaces the old ``_build_auth_header`` (PAT-as-Basic-auth
-    header) approach after observed failures where git would fall
-    through to the interactive credential prompt in the sandbox.
-    URL embedding bypasses git's credential helper machinery
-    entirely, which is more reliable for scripted pushes.
+    The token is embedded as the **entire userinfo** of the URL
+    (no username prefix, no colon-password split). This matches
+    GitHub's documented form:
+
+        git clone https://TOKEN@github.com/USER/REPO
+
+    An earlier version used ``x-access-token:<pat>`` as the
+    userinfo, matching the GitHub App installation-token
+    convention. GitHub rejected that with a misleading
+    "password authentication not supported" error because the
+    ``x-access-token`` username routes to the App-token auth
+    handler, which expects a different token format. Using the
+    PAT as the whole userinfo sidesteps that pattern match.
     """
 
-    def test_https_github_url_gets_credentials_embedded(self):
+    def test_https_github_url_gets_token_as_userinfo(self):
         from delulu_sandbox_modal.repo_provisioner import _build_push_url_with_pat
 
         url = _build_push_url_with_pat(
             "https://github.com/alice/api-service.git",
             "ghp_abcdef123456",
         )
-        assert url == "https://x-access-token:ghp_abcdef123456@github.com/alice/api-service.git"
+        assert url == "https://ghp_abcdef123456@github.com/alice/api-service.git"
 
     def test_https_github_url_without_dot_git_suffix(self):
         from delulu_sandbox_modal.repo_provisioner import _build_push_url_with_pat
@@ -150,7 +158,33 @@ class TestBuildPushUrlWithPat:
             "https://github.com/alice/api-service",
             "ghp_abcdef123456",
         )
-        assert url == "https://x-access-token:ghp_abcdef123456@github.com/alice/api-service"
+        assert url == "https://ghp_abcdef123456@github.com/alice/api-service"
+
+    def test_no_username_prefix_in_url(self):
+        """Regression guard for the x-access-token mistake.
+
+        The bug that motivated this helper shape was using
+        ``x-access-token:<pat>@...`` as the userinfo, which
+        GitHub rejects with a misleading
+        "password authentication not supported" error. The
+        resulting URL must NOT contain any ``:`` in the
+        userinfo component — the token is the whole userinfo.
+        """
+        from delulu_sandbox_modal.repo_provisioner import _build_push_url_with_pat
+
+        url = _build_push_url_with_pat(
+            "https://github.com/alice/api-service",
+            "ghp_abcdef",
+        )
+        # Extract the userinfo component: everything between "://" and the next "@"
+        assert "://" in url and "@" in url
+        userinfo = url.split("://", 1)[1].split("@", 1)[0]
+        assert ":" not in userinfo, (
+            f"userinfo must be token-only (no ':' split), got {userinfo!r} — "
+            "this is the x-access-token regression guard"
+        )
+        assert userinfo == "ghp_abcdef"
+        assert "x-access-token" not in url
 
     def test_fine_grained_pat_format_roundtrips(self):
         """Fine-grained PATs have underscores and longer length — should be fine."""
@@ -158,7 +192,7 @@ class TestBuildPushUrlWithPat:
 
         token = "github_pat_11ABCDEFG_xyz123"
         url = _build_push_url_with_pat("https://github.com/alice/api-service", token)
-        assert f"x-access-token:{token}@github.com" in url
+        assert f"{token}@github.com" in url
 
     def test_non_default_port_preserved(self):
         from delulu_sandbox_modal.repo_provisioner import _build_push_url_with_pat
@@ -167,7 +201,7 @@ class TestBuildPushUrlWithPat:
             "https://github.example.com:8443/alice/api-service.git",
             "ghp_abcdef",
         )
-        assert "x-access-token:ghp_abcdef@github.example.com:8443" in url
+        assert "ghp_abcdef@github.example.com:8443" in url
 
     def test_ssh_url_rejected(self):
         """v1 only supports HTTPS remotes; SSH urls have no place for a PAT."""
