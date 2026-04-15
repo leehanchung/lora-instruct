@@ -124,32 +124,107 @@ class TestParseRepoUrl:
             _parse_repo_url("https://github.com/alice/../../etc")
 
 
-class TestBuildAuthHeader:
-    """The PAT-as-Basic-Auth header used for /commit pushes."""
+class TestBuildPushUrlWithPat:
+    """URL-embedded PAT credentials for the /commit push path.
 
-    def test_builds_basic_auth_header_with_x_access_token_user(self):
-        from delulu_sandbox_modal.repo_provisioner import _build_auth_header
+    Replaces the old ``_build_auth_header`` (PAT-as-Basic-auth
+    header) approach after observed failures where git would fall
+    through to the interactive credential prompt in the sandbox.
+    URL embedding bypasses git's credential helper machinery
+    entirely, which is more reliable for scripted pushes.
+    """
 
-        header = _build_auth_header("ghp_abcdef123456")
-        # Basic auth = base64("x-access-token:ghp_abcdef123456")
-        assert header.startswith("Authorization: Basic ")
-        encoded = header[len("Authorization: Basic ") :]
-        import base64
+    def test_https_github_url_gets_credentials_embedded(self):
+        from delulu_sandbox_modal.repo_provisioner import _build_push_url_with_pat
 
-        decoded = base64.b64decode(encoded).decode()
-        assert decoded == "x-access-token:ghp_abcdef123456"
+        url = _build_push_url_with_pat(
+            "https://github.com/alice/api-service.git",
+            "ghp_abcdef123456",
+        )
+        assert url == "https://x-access-token:ghp_abcdef123456@github.com/alice/api-service.git"
 
-    def test_handles_special_characters_in_token(self):
-        from delulu_sandbox_modal.repo_provisioner import _build_auth_header
+    def test_https_github_url_without_dot_git_suffix(self):
+        from delulu_sandbox_modal.repo_provisioner import _build_push_url_with_pat
 
-        # Fine-grained PAT format includes underscores and longer
-        # length; should encode fine.
+        url = _build_push_url_with_pat(
+            "https://github.com/alice/api-service",
+            "ghp_abcdef123456",
+        )
+        assert url == "https://x-access-token:ghp_abcdef123456@github.com/alice/api-service"
+
+    def test_fine_grained_pat_format_roundtrips(self):
+        """Fine-grained PATs have underscores and longer length — should be fine."""
+        from delulu_sandbox_modal.repo_provisioner import _build_push_url_with_pat
+
         token = "github_pat_11ABCDEFG_xyz123"
-        header = _build_auth_header(token)
-        import base64
+        url = _build_push_url_with_pat("https://github.com/alice/api-service", token)
+        assert f"x-access-token:{token}@github.com" in url
 
-        decoded = base64.b64decode(header[len("Authorization: Basic ") :]).decode()
-        assert decoded == f"x-access-token:{token}"
+    def test_non_default_port_preserved(self):
+        from delulu_sandbox_modal.repo_provisioner import _build_push_url_with_pat
+
+        url = _build_push_url_with_pat(
+            "https://github.example.com:8443/alice/api-service.git",
+            "ghp_abcdef",
+        )
+        assert "x-access-token:ghp_abcdef@github.example.com:8443" in url
+
+    def test_ssh_url_rejected(self):
+        """v1 only supports HTTPS remotes; SSH urls have no place for a PAT."""
+        from delulu_sandbox_modal.repo_provisioner import _build_push_url_with_pat
+
+        with pytest.raises(ValueError, match="non-HTTPS origin"):
+            _build_push_url_with_pat(
+                "git@github.com:alice/api-service.git",
+                "ghp_abcdef",
+            )
+
+    def test_empty_token_rejected(self):
+        from delulu_sandbox_modal.repo_provisioner import _build_push_url_with_pat
+
+        with pytest.raises(ValueError, match="github_token must not be empty"):
+            _build_push_url_with_pat(
+                "https://github.com/alice/api-service.git",
+                "",
+            )
+
+
+class TestScrubPat:
+    """Sanitize git error messages so the PAT doesn't leak to Discord/logs."""
+
+    def test_scrubs_pat_from_message(self):
+        from delulu_sandbox_modal.repo_provisioner import _scrub_pat
+
+        token = "ghp_abcdef123456"
+        msg = (
+            "git -C /vol/workspaces/42 push "
+            "https://x-access-token:ghp_abcdef123456@github.com/alice/api-service.git "
+            "claude/42 failed with exit code 128: stderr='fatal: auth failed'"
+        )
+        scrubbed = _scrub_pat(msg, token)
+        assert token not in scrubbed
+        assert "***PAT***" in scrubbed
+
+    def test_handles_multiple_occurrences(self):
+        from delulu_sandbox_modal.repo_provisioner import _scrub_pat
+
+        token = "ghp_xyz"
+        msg = f"URL1: {token} URL2: {token}"
+        scrubbed = _scrub_pat(msg, token)
+        assert token not in scrubbed
+        assert scrubbed.count("***PAT***") == 2
+
+    def test_empty_token_leaves_message_unchanged(self):
+        from delulu_sandbox_modal.repo_provisioner import _scrub_pat
+
+        msg = "some error message"
+        assert _scrub_pat(msg, "") == msg
+
+    def test_missing_token_leaves_message_unchanged(self):
+        """Defensive: if the token isn't in the message, don't touch it."""
+        from delulu_sandbox_modal.repo_provisioner import _scrub_pat
+
+        assert _scrub_pat("no secrets here", "ghp_xxx") == "no secrets here"
 
 
 class TestCommitWorkspaceChanges:

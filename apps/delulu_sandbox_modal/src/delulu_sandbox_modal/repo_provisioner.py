@@ -394,11 +394,13 @@ def commit_workspace_changes(
     branch (creating the branch if missing) and pushes it to
     ``origin``.
 
-    Auth: ``github_token`` is injected at push time via
-    ``-c http.extraheader``, never persisted to ``.git/config``.
-    The token is shell-escaped and the header is built with
-    ``x-access-token:<token>`` per GitHub's documented PAT-as-
-    HTTP-Basic format.
+    Auth: ``github_token`` is embedded in the push URL as
+    ``https://x-access-token:<pat>@host/owner/repo[.git]`` for
+    the single ``git push`` invocation. Never persisted to
+    ``.git/config``, never written to the remote's stored URL.
+    See ``_build_push_url_with_pat`` for the URL construction
+    and ``_scrub_pat`` for why error messages get sanitized
+    before being surfaced.
 
     Caller must verify ``github_token`` is non-empty BEFORE calling
     this function — refuse-and-instruct on missing PAT happens at
@@ -459,23 +461,32 @@ def commit_workspace_changes(
     sha_result = _run_git(["-C", workspace_path, "rev-parse", "HEAD"])
     commit_sha = sha_result.stdout.strip()
 
-    # Push via PAT-as-Basic-Auth header. This is how GitHub
-    # documents PAT auth over HTTPS. The header lives only on the
-    # one git invocation — never written to .git/config, never
-    # logged.
-    auth_header = _build_auth_header(github_token)
+    # Push via URL-embedded PAT credentials, passing the full
+    # https://x-access-token:<pat>@host/owner/repo[.git] URL as a
+    # one-off argument to `git push`. We used to use
+    # `-c http.extraheader=Authorization: Basic <base64>` but git
+    # would intermittently fall through to the interactive
+    # credential prompt in the sandbox, producing:
+    #
+    #     fatal: could not read Username for 'https://github.com':
+    #     No such device or address
+    #
+    # when git tries to read `/dev/tty` in our non-interactive
+    # subprocess. http.extraheader is subtly dependent on the
+    # credential helper chain, URL normalization, and whether git
+    # considers the hostname scope a match — all of which can vary
+    # across git versions and repo configs. URL-embedded
+    # credentials are the boring-but-reliable alternative: they
+    # bypass git's credential helper machinery entirely because
+    # the auth is in the URL itself.
+    origin_result = _run_git(
+        ["-C", workspace_path, "config", "--get", "remote.origin.url"],
+    )
+    origin_url = origin_result.stdout.strip()
+    push_url = _build_push_url_with_pat(origin_url, github_token)
+
     try:
-        _run_git(
-            [
-                "-c",
-                f"http.extraheader={auth_header}",
-                "-C",
-                workspace_path,
-                "push",
-                "origin",
-                branch,
-            ]
-        )
+        _run_git(["-C", workspace_path, "push", push_url, branch])
     except RuntimeError as exc:
         # Push failed — most commonly an invalid/expired PAT (401)
         # or insufficient scopes. The local commit DID land on the
@@ -483,11 +494,16 @@ def commit_workspace_changes(
         # rotating the PAT and the next push will catch up. Surface
         # the git error to the bot so the user sees actionable
         # detail instead of a generic "push failed."
+        #
+        # **Scrub the PAT** before surfacing: `_run_git`'s error
+        # message includes the full args, and one of those args is
+        # the push URL with the PAT embedded. Leaving it raw would
+        # leak the token into Discord message bodies and bot logs.
         return CommitResult(
             status="push_failed",
             branch=branch,
             commit_sha=commit_sha,
-            error=str(exc),
+            error=_scrub_pat(str(exc), github_token),
         )
 
     pr_compare_url = _build_pr_compare_url(workspace_path, branch)
@@ -500,19 +516,69 @@ def commit_workspace_changes(
     )
 
 
-def _build_auth_header(github_token: str) -> str:
-    """Build the ``Authorization: Basic ...`` header for a GitHub PAT.
+def _build_push_url_with_pat(origin_url: str, github_token: str) -> str:
+    """Return the origin URL with ``x-access-token:<pat>`` credentials embedded.
 
-    GitHub's documented format is ``x-access-token:<pat>``,
-    base64-encoded. Using ``x-access-token`` as the username is
-    the convention — anything works as the username, but
-    ``x-access-token`` is what GitHub's own docs and CLI use.
+    Transforms ``https://github.com/owner/repo[.git]`` into
+    ``https://x-access-token:<pat>@github.com/owner/repo[.git]``.
+
+    The PAT becomes part of the URL, which git then uses directly
+    for HTTP basic auth without going through the credential
+    helper chain. This is the reliable alternative to
+    ``-c http.extraheader`` for scripted pushes — git's extraheader
+    path has subtle scoping and credential-fallback issues that
+    were biting us in the sandbox.
+
+    Only HTTPS URLs are supported. SSH URLs (``git@github.com:…``)
+    don't have a natural place to stick a PAT because SSH auth is
+    keypair-based, not username/password. The ``/commit`` flow is
+    single-shared-PAT-only anyway (see the PRD's v1 scope notes),
+    so anything non-HTTPS is rejected loudly.
     """
-    import base64
+    from urllib.parse import urlparse, urlunparse
 
-    raw = f"x-access-token:{github_token}".encode()
-    encoded = base64.b64encode(raw).decode("ascii")
-    return f"Authorization: Basic {encoded}"
+    if not github_token:
+        raise ValueError("github_token must not be empty")
+
+    parsed = urlparse(origin_url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(
+            f"cannot push via PAT to non-HTTPS origin {origin_url!r} "
+            "(v1 only supports https:// remotes; use a fork or switch "
+            "the remote's URL scheme)"
+        )
+
+    host = parsed.hostname or ""
+    if not host:
+        raise ValueError(f"cannot parse host from origin URL {origin_url!r}")
+
+    # Rebuild netloc with ``x-access-token:<pat>@host[:port]``. The
+    # ``x-access-token`` username is what GitHub documents for PAT
+    # auth over HTTPS — any non-empty string works as the username
+    # but this one matches GitHub's docs and makes the intent
+    # unambiguous in a packet capture.
+    netloc = f"x-access-token:{github_token}@{host}"
+    if parsed.port:
+        netloc = f"{netloc}:{parsed.port}"
+
+    return urlunparse(parsed._replace(netloc=netloc))
+
+
+def _scrub_pat(message: str, github_token: str) -> str:
+    """Replace every occurrence of ``github_token`` in ``message`` with a placeholder.
+
+    Used to sanitize ``git push`` error messages before they hit
+    Discord or the bot log. Because we build the push URL with
+    the PAT embedded, any git error message that echoes the args
+    (which ``_run_git`` does) carries the PAT verbatim — a leak
+    straight into whatever renders the error.
+
+    Idempotent and safe to call on empty strings or empty tokens;
+    returns the input unchanged in the degenerate cases.
+    """
+    if not github_token or github_token not in message:
+        return message
+    return message.replace(github_token, "***PAT***")
 
 
 def _build_pr_compare_url(workspace_path: str, branch: str) -> str | None:
