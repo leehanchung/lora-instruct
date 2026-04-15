@@ -517,17 +517,40 @@ def commit_workspace_changes(
 
 
 def _build_push_url_with_pat(origin_url: str, github_token: str) -> str:
-    """Return the origin URL with ``x-access-token:<pat>`` credentials embedded.
+    """Return the origin URL with the PAT embedded as the userinfo component.
 
     Transforms ``https://github.com/owner/repo[.git]`` into
-    ``https://x-access-token:<pat>@github.com/owner/repo[.git]``.
+    ``https://<pat>@github.com/owner/repo[.git]``.
 
-    The PAT becomes part of the URL, which git then uses directly
-    for HTTP basic auth without going through the credential
-    helper chain. This is the reliable alternative to
-    ``-c http.extraheader`` for scripted pushes — git's extraheader
-    path has subtle scoping and credential-fallback issues that
-    were biting us in the sandbox.
+    The PAT becomes the entire userinfo of the URL — **no username
+    prefix, no colon**. When git parses this, it sends an HTTP Basic
+    auth header with the PAT as the username and an empty password,
+    which is the form GitHub's server recognizes for PAT-over-HTTPS
+    auth.
+
+    **Why not ``x-access-token:<pat>@...``?** An earlier version of
+    this function used ``x-access-token`` as the username (matching
+    the convention for GitHub App installation tokens). GitHub's
+    server would reject it with:
+
+        remote: Invalid username or password. Password authentication
+        is not supported for Git operations.
+
+    The error message is misleading — the actual cause is that the
+    ``x-access-token`` username signals "I am a GitHub App" to
+    GitHub's auth layer, which then expects a GitHub App installation
+    token (different format from a Personal Access Token). The PAT
+    fails the App-token pattern match and GitHub falls back to the
+    generic "password authentication not supported" error. Using the
+    PAT as the whole userinfo sidesteps this pattern-matching
+    disaster entirely.
+
+    GitHub documents this format directly:
+
+        git clone https://TOKEN@github.com/USER/REPO
+
+    which is what we mirror here. Reference:
+    https://docs.github.com/en/get-started/git-basics/caching-your-github-credentials-in-git
 
     Only HTTPS URLs are supported. SSH URLs (``git@github.com:…``)
     don't have a natural place to stick a PAT because SSH auth is
@@ -552,12 +575,9 @@ def _build_push_url_with_pat(origin_url: str, github_token: str) -> str:
     if not host:
         raise ValueError(f"cannot parse host from origin URL {origin_url!r}")
 
-    # Rebuild netloc with ``x-access-token:<pat>@host[:port]``. The
-    # ``x-access-token`` username is what GitHub documents for PAT
-    # auth over HTTPS — any non-empty string works as the username
-    # but this one matches GitHub's docs and makes the intent
-    # unambiguous in a packet capture.
-    netloc = f"x-access-token:{github_token}@{host}"
+    # Token-only userinfo — no username prefix. See the docstring
+    # for the "why not x-access-token" story.
+    netloc = f"{github_token}@{host}"
     if parsed.port:
         netloc = f"{netloc}:{parsed.port}"
 
