@@ -31,28 +31,43 @@ DICT_NAME = "discord-orchestrator-repo-config"
 
 
 class RepoConfig:
-    """Modal-Dict-backed channel→(repo_url, ref) binding store."""
+    """Modal-Dict-backed channel→(repo_url, ref) binding store.
+
+    All methods are **async** because the bot runs on discord.py's
+    asyncio event loop. Using ``modal.Dict``'s blocking dict-style
+    API (``d.get(key)``, ``d[key] = value``, ``d.pop(key)``) from
+    within a coroutine stalls the event loop for the duration of
+    the Modal round-trip (~50–200ms per call), which freezes every
+    other async task in the bot — gateway heartbeats, inbound
+    messages, slash-command interactions. Modal surfaces this as
+    ``AsyncUsageWarning``.
+
+    The fix is to use modal.Dict's ``.aio`` variants, which return
+    awaitables. Each blocking method on ``modal.Dict`` exposes an
+    ``.aio`` attribute that's the async version of the same call —
+    e.g. ``d.get.aio(key)`` returns a coroutine.
+    """
 
     def __init__(self) -> None:
         self._dict = modal.Dict.from_name(DICT_NAME, create_if_missing=True)
 
-    def get(self, channel_id: int) -> tuple[str, str] | None:
+    async def get(self, channel_id: int) -> tuple[str, str] | None:
         """Return ``(repo_url, ref)`` for a channel, or ``None`` if unbound.
 
         Used by the message handler at thread-creation time. Returning
         ``None`` is the "general Q&A mode" sentinel — the dispatch
         proceeds with an empty workspace and no git operations.
         """
-        raw = self._dict.get(channel_id)
+        raw = await self._dict.get.aio(channel_id)
         if raw is None:
             return None
         # Stored as a small dict so the schema is self-describing in
         # Modal's UI and survives field additions.
         return raw["repo_url"], raw["ref"]
 
-    def set(self, channel_id: int, repo_url: str, ref: str = "HEAD") -> None:
+    async def set(self, channel_id: int, repo_url: str, ref: str = "HEAD") -> None:
         """Bind a channel to ``(repo_url, ref)``. Overwrites any existing binding."""
-        self._dict[channel_id] = {"repo_url": repo_url, "ref": ref}
+        await self._dict.put.aio(channel_id, {"repo_url": repo_url, "ref": ref})
         logger.info(
             "repo_config.set",
             channel_id=channel_id,
@@ -60,12 +75,12 @@ class RepoConfig:
             ref=ref,
         )
 
-    def unset(self, channel_id: int) -> None:
+    async def unset(self, channel_id: int) -> None:
         """Remove a channel's binding. No-op if not present."""
         # `pop` on modal.Dict raises KeyError if missing; swallow it
         # so callers don't have to special-case the no-binding path.
         try:
-            self._dict.pop(channel_id)
+            await self._dict.pop.aio(channel_id)
             logger.info("repo_config.unset", channel_id=channel_id)
         except KeyError:
             pass
