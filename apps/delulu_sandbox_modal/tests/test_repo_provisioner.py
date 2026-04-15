@@ -127,29 +127,25 @@ class TestParseRepoUrl:
 class TestBuildPushUrlWithPat:
     """URL-embedded PAT credentials for the /commit push path.
 
-    The token is embedded as the **entire userinfo** of the URL
-    (no username prefix, no colon-password split). This matches
-    GitHub's documented form:
+    The token is placed in the **password** field of the Basic auth
+    component, with ``git`` as a placeholder username:
 
-        git clone https://TOKEN@github.com/USER/REPO
+        https://git:<pat>@github.com/owner/repo
 
-    An earlier version used ``x-access-token:<pat>`` as the
-    userinfo, matching the GitHub App installation-token
-    convention. GitHub rejected that with a misleading
-    "password authentication not supported" error because the
-    ``x-access-token`` username routes to the App-token auth
-    handler, which expects a different token format. Using the
-    PAT as the whole userinfo sidesteps that pattern match.
+    See ``_build_push_url_with_pat``'s docstring for the full
+    four-attempt saga. The test_no_xaccesstoken_regression and
+    test_pat_in_password_not_username_field tests guard against
+    the two failure modes we've already hit.
     """
 
-    def test_https_github_url_gets_token_as_userinfo(self):
+    def test_https_github_url_gets_credentials_embedded(self):
         from delulu_sandbox_modal.repo_provisioner import _build_push_url_with_pat
 
         url = _build_push_url_with_pat(
             "https://github.com/alice/api-service.git",
             "ghp_abcdef123456",
         )
-        assert url == "https://ghp_abcdef123456@github.com/alice/api-service.git"
+        assert url == "https://git:ghp_abcdef123456@github.com/alice/api-service.git"
 
     def test_https_github_url_without_dot_git_suffix(self):
         from delulu_sandbox_modal.repo_provisioner import _build_push_url_with_pat
@@ -158,17 +154,41 @@ class TestBuildPushUrlWithPat:
             "https://github.com/alice/api-service",
             "ghp_abcdef123456",
         )
-        assert url == "https://ghp_abcdef123456@github.com/alice/api-service"
+        assert url == "https://git:ghp_abcdef123456@github.com/alice/api-service"
 
-    def test_no_username_prefix_in_url(self):
-        """Regression guard for the x-access-token mistake.
+    def test_pat_in_password_not_username_field(self):
+        """Regression guard — PR #58's mistake was putting the PAT alone in userinfo.
 
-        The bug that motivated this helper shape was using
-        ``x-access-token:<pat>@...`` as the userinfo, which
-        GitHub rejects with a misleading
-        "password authentication not supported" error. The
-        resulting URL must NOT contain any ``:`` in the
-        userinfo component — the token is the whole userinfo.
+        GitHub rejected token-only userinfo (``<pat>@github.com``)
+        because it wants the PAT in the password field. Git then
+        tried to read a password interactively and failed with
+        "could not read Password: No such device or address."
+
+        The userinfo must contain a ``:`` splitting a non-empty
+        username from the PAT, and the PAT must be AFTER the
+        colon (the password field).
+        """
+        from delulu_sandbox_modal.repo_provisioner import _build_push_url_with_pat
+
+        token = "ghp_abcdef"
+        url = _build_push_url_with_pat("https://github.com/alice/api-service", token)
+        # Extract the userinfo component
+        assert "://" in url and "@" in url
+        userinfo = url.split("://", 1)[1].split("@", 1)[0]
+        # Must have a colon splitting username:password
+        assert ":" in userinfo, f"userinfo must be 'user:pat' form, got {userinfo!r}"
+        username, _, password = userinfo.partition(":")
+        assert username, "username field must be non-empty"
+        assert password == token, f"PAT must be in password field, not username; got {userinfo!r}"
+
+    def test_no_xaccesstoken_regression(self):
+        """Regression guard — PR #56's mistake was ``x-access-token:<pat>``.
+
+        The ``x-access-token`` username is for GitHub App installation
+        tokens, not Personal Access Tokens. GitHub's auth layer routes
+        it to the App-token handler, which rejects PATs with a
+        misleading "password authentication not supported" error. This
+        test fails loudly if anyone ever re-adds that username.
         """
         from delulu_sandbox_modal.repo_provisioner import _build_push_url_with_pat
 
@@ -176,14 +196,6 @@ class TestBuildPushUrlWithPat:
             "https://github.com/alice/api-service",
             "ghp_abcdef",
         )
-        # Extract the userinfo component: everything between "://" and the next "@"
-        assert "://" in url and "@" in url
-        userinfo = url.split("://", 1)[1].split("@", 1)[0]
-        assert ":" not in userinfo, (
-            f"userinfo must be token-only (no ':' split), got {userinfo!r} — "
-            "this is the x-access-token regression guard"
-        )
-        assert userinfo == "ghp_abcdef"
         assert "x-access-token" not in url
 
     def test_fine_grained_pat_format_roundtrips(self):
@@ -192,7 +204,7 @@ class TestBuildPushUrlWithPat:
 
         token = "github_pat_11ABCDEFG_xyz123"
         url = _build_push_url_with_pat("https://github.com/alice/api-service", token)
-        assert f"{token}@github.com" in url
+        assert f":{token}@github.com" in url
 
     def test_non_default_port_preserved(self):
         from delulu_sandbox_modal.repo_provisioner import _build_push_url_with_pat
@@ -201,7 +213,7 @@ class TestBuildPushUrlWithPat:
             "https://github.example.com:8443/alice/api-service.git",
             "ghp_abcdef",
         )
-        assert "ghp_abcdef@github.example.com:8443" in url
+        assert "git:ghp_abcdef@github.example.com:8443" in url
 
     def test_ssh_url_rejected(self):
         """v1 only supports HTTPS remotes; SSH urls have no place for a PAT."""
