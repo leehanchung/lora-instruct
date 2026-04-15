@@ -387,6 +387,12 @@ available targets.
 
 ## CI/CD (GitHub Actions)
 
+> For the full mental model of how pre-commit, CI, branch protection,
+> and per-app Makefiles interact across `apps/delulu_discord` and
+> `apps/delulu_sandbox_modal` — including the "skipped-check" gotcha
+> and the ruff-version drift trap — see
+> [`docs/monorepo-conventions.md`](docs/monorepo-conventions.md).
+
 The workflow at
 [`.github/workflows/delulu-deploy.yaml`](.github/workflows/delulu-deploy.yaml)
 handles both continuous integration and continuous deployment in six
