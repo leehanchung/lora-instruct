@@ -528,28 +528,57 @@ def run_claude_code(
         # --output-format stream-json requires --verbose in Claude Code;
         # without it, CC errors out before producing any events.
         "--verbose",
-        # Auto-accept all tool calls including file edits, writes, and
-        # bash commands. Without this flag, Claude Code runs in its
-        # default interactive permission mode, and in -p (non-interactive)
-        # mode that mode auto-REFUSES file-write tools with the canned
-        # "I don't have write permission" response. Read/Glob/Grep still
-        # work (they're always allowed), but the whole point of a code-
-        # editing bot is Edit/Write/Bash, so the default is broken for
-        # our use case.
+        # Per-tool allowlist so file edits, writes, and shell commands
+        # execute without prompting in -p mode. The earlier attempt at
+        # `--dangerously-skip-permissions` (PR #53) was correct in
+        # spirit but hit Claude Code's hard refusal:
         #
-        # Safe because the Modal sandbox IS the trust boundary: each
-        # invocation is an ephemeral container with only the workspace
-        # volume mounted, no access to production systems, and a hard
-        # 300s wall-clock timeout. The only filesystem Claude can
-        # damage is the per-thread worktree at /vol/workspaces/<id>/,
-        # which the user is explicitly asking Claude to modify. The
-        # volume cap on damage is the bare cache itself — and provision
-        # runs in a separate container with its own serialization, so
-        # Claude inside run_claude_code can't race against it.
+        #     Claude Code exited with code 1:
+        #     --dangerously-skip-permissions cannot be used with
+        #     root/sudo privileges for security reasons
         #
-        # Equivalent to --permission-mode bypassPermissions per the
-        # Claude Code CLI docs.
-        "--dangerously-skip-permissions",
+        # Modal containers run as root by default, and Claude Code
+        # specifically blocks bypassPermissions mode under root
+        # regardless of the actual threat model — running the sandbox
+        # as non-root would be cleaner but requires a substantial image
+        # rewrite (user creation, /vol ownership, node_modules perms,
+        # HOME directory migration).
+        #
+        # `--allowedTools` takes an explicit per-tool allowlist and
+        # doesn't have the root check — it's a targeted "these specific
+        # tools don't need a prompt" rather than a blanket "bypass all
+        # prompts." Per the Claude Code CLI docs, tools listed here
+        # execute without prompting; tools NOT listed still fall through
+        # to the default mode (which in -p mode means refused).
+        #
+        # The list below covers every tool Claude Code commonly uses
+        # for a code-editing task. Read/Glob/Grep are redundant (they're
+        # always allowed anyway) but listed for clarity — the file is
+        # supposed to be "here's the whole set of tools this bot is
+        # allowed to use," not "here's the minimum delta over the
+        # implicit defaults."
+        #
+        # If Claude Code adds a new tool in a future version that we
+        # forgot to list, it'll fall through to the refused path and
+        # we'll see a ✗ in the status message rather than silent
+        # surprise — fail-closed is the right default.
+        #
+        # Safe because the Modal sandbox is the trust boundary — see
+        # PR #53's commit message for the full argument. Each invocation
+        # is an ephemeral container with only /vol mounted, a 300s
+        # wall-clock timeout, and no access to production systems.
+        "--allowedTools",
+        "Bash",
+        "Edit",
+        "Glob",
+        "Grep",
+        "NotebookEdit",
+        "Read",
+        "Task",
+        "TodoWrite",
+        "WebFetch",
+        "WebSearch",
+        "Write",
     ]
     if resume:
         # --continue resumes the most recent Claude Code session in the cwd.
