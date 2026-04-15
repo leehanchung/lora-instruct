@@ -48,7 +48,7 @@ class MessageHandler:
         thread_name = prompt[:50].strip() or "Claude Code task"
         thread = await message.create_thread(name=thread_name)
 
-        binding = self.repo_config.get(message.channel.id)
+        binding = await self.repo_config.get(message.channel.id)
         if binding is None:
             repo_url, ref = None, self.settings.default_git_ref
         else:

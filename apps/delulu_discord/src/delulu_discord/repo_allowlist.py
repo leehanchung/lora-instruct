@@ -38,33 +38,38 @@ DICT_NAME = "discord-orchestrator-allowlist"
 
 
 class RepoAllowlist:
-    """Modal-Dict-backed per-guild repo allowlist."""
+    """Modal-Dict-backed per-guild repo allowlist.
+
+    All methods are **async** for the same reason as ``RepoConfig``:
+    blocking ``modal.Dict`` calls stall discord.py's event loop.
+    See the RepoConfig docstring for the full rationale.
+    """
 
     def __init__(self) -> None:
         self._dict = modal.Dict.from_name(DICT_NAME, create_if_missing=True)
 
-    def get(self, guild_id: int) -> list[str]:
+    async def get(self, guild_id: int) -> list[str]:
         """Return the allowlist for a guild (empty list if unset).
 
         Used by ``/setrepo`` autocomplete + validation, and by
         ``/admin_listrepos`` to show the current state.
         """
-        return list(self._dict.get(guild_id) or [])
+        return list(await self._dict.get.aio(guild_id) or [])
 
-    def add(self, guild_id: int, owner_repo: str) -> None:
+    async def add(self, guild_id: int, owner_repo: str) -> None:
         """Add an entry to a guild's allowlist. Idempotent."""
-        current = self.get(guild_id)
+        current = await self.get(guild_id)
         if owner_repo in current:
             return
         current.append(owner_repo)
-        self._dict[guild_id] = current
+        await self._dict.put.aio(guild_id, current)
         logger.info(
             "repo_allowlist.add",
             guild_id=guild_id,
             owner_repo=owner_repo,
         )
 
-    def remove(self, guild_id: int, owner_repo: str) -> None:
+    async def remove(self, guild_id: int, owner_repo: str) -> None:
         """Remove an entry from a guild's allowlist. No-op if not present.
 
         Note: does NOT retroactively unbind channels that were
@@ -74,17 +79,17 @@ class RepoAllowlist:
         check, so the recovery path is "rebind to an allowed repo or
         unbind manually."
         """
-        current = self.get(guild_id)
+        current = await self.get(guild_id)
         if owner_repo not in current:
             return
         current.remove(owner_repo)
-        self._dict[guild_id] = current
+        await self._dict.put.aio(guild_id, current)
         logger.info(
             "repo_allowlist.remove",
             guild_id=guild_id,
             owner_repo=owner_repo,
         )
 
-    def contains(self, guild_id: int, owner_repo: str) -> bool:
+    async def contains(self, guild_id: int, owner_repo: str) -> bool:
         """True iff ``owner_repo`` is on ``guild_id``'s allowlist."""
-        return owner_repo in self.get(guild_id)
+        return owner_repo in await self.get(guild_id)

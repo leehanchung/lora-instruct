@@ -124,8 +124,8 @@ def register_slash_commands(
             )
             return
 
-        if not repo_allowlist.contains(interaction.guild_id, repo):
-            current = repo_allowlist.get(interaction.guild_id)
+        if not await repo_allowlist.contains(interaction.guild_id, repo):
+            current = await repo_allowlist.get(interaction.guild_id)
             if current:
                 listing = "\n".join(f"  • `{r}`" for r in current)
                 msg = (
@@ -145,7 +145,7 @@ def register_slash_commands(
         # needs this form for `git clone`; the bot's display code
         # parses owner/repo back out of it via _short_repo_name.
         full_url = f"https://github.com/{repo}"
-        repo_config.set(interaction.channel_id, full_url, ref)
+        await repo_config.set(interaction.channel_id, full_url, ref)
 
         await interaction.response.send_message(
             f"✅ Channel bound to `{repo}@{ref}`. "
@@ -161,7 +161,7 @@ def register_slash_commands(
         if interaction.guild_id is None:
             return []
         return _build_autocomplete_choices(
-            repo_allowlist.get(interaction.guild_id),
+            await repo_allowlist.get(interaction.guild_id),
             current,
         )
 
@@ -178,7 +178,7 @@ def register_slash_commands(
             )
             return
 
-        repo_config.unset(interaction.channel_id)
+        await repo_config.unset(interaction.channel_id)
         await interaction.response.send_message(
             "✅ Channel unbound. New `@claude` mentions will run with no repo (general Q&A mode).",
             ephemeral=True,
@@ -221,7 +221,7 @@ def register_slash_commands(
             )
             return
 
-        repo_allowlist.add(interaction.guild_id, repo)
+        await repo_allowlist.add(interaction.guild_id, repo)
         await interaction.followup.send(
             f"✅ `{repo}` added to this server's allowlist.\nUsers can now `/setrepo` against it.",
             ephemeral=True,
@@ -243,14 +243,14 @@ def register_slash_commands(
             return
 
         repo = repo.strip()
-        if not repo_allowlist.contains(interaction.guild_id, repo):
+        if not await repo_allowlist.contains(interaction.guild_id, repo):
             await interaction.response.send_message(
                 f"`{repo}` isn't on this server's allowlist — nothing to remove.",
                 ephemeral=True,
             )
             return
 
-        repo_allowlist.remove(interaction.guild_id, repo)
+        await repo_allowlist.remove(interaction.guild_id, repo)
         await interaction.response.send_message(
             f"✅ `{repo}` removed from this server's allowlist.\n\n"
             "*Note: existing channel bindings to this repo are NOT cleared. "
@@ -266,7 +266,7 @@ def register_slash_commands(
         if interaction.guild_id is None:
             return []
         return _build_autocomplete_choices(
-            repo_allowlist.get(interaction.guild_id),
+            await repo_allowlist.get(interaction.guild_id),
             current,
         )
 
@@ -284,7 +284,7 @@ def register_slash_commands(
             )
             return
 
-        current = repo_allowlist.get(interaction.guild_id)
+        current = await repo_allowlist.get(interaction.guild_id)
         if not current:
             await interaction.response.send_message(
                 "*This server has no allowed repos yet. Add one with `/admin_addrepo`.*",
