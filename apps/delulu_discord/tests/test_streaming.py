@@ -294,3 +294,149 @@ async def test_flush_once_skips_edit_when_content_unchanged() -> None:
     # No new events → _render output is unchanged → no redundant edit.
     await live._flush_once()
     assert msg.edit.call_count == 1
+
+
+# ── Active-repo subtitle line (Phase 3 addition) ─────────────────
+#
+# The repo subtitle renders as the second line of the status
+# message, right under the thinking/reasoning header, whenever a
+# repo is bound. Omitted entirely when no binding. These tests
+# pin the contract so future renderer changes don't accidentally
+# drop the orientation indicator.
+
+
+REPO_URL = "https://github.com/alice/api-service"
+
+
+def test_render_no_repo_omits_subtitle_line() -> None:
+    """Empty/None repo_url → no subtitle line, identical to pre-Phase-3 output."""
+    rendered = _render([_tool_use("Read", "`x.py`")])
+    assert "📁" not in rendered
+    assert "alice" not in rendered
+
+
+def test_render_with_repo_adds_subtitle_under_header() -> None:
+    """Repo line is the SECOND line, right under the thinking/reasoning header."""
+    rendered = _render(
+        [_tool_use("Read", "`x.py`")],
+        repo_url=REPO_URL,
+        ref="main",
+    )
+    lines = rendered.splitlines()
+    assert lines[0].startswith("💭")  # default placeholder header
+    assert lines[1] == "📁 alice/api-service@main"
+    assert "🔧 Read `x.py`" in rendered
+
+
+def test_render_with_repo_under_thinking_spoiler() -> None:
+    """When reasoning is present the spoiler header is line 0; repo line is line 1."""
+    rendered = _render(
+        [
+            {"type": "thinking", "text": "considering the approach"},
+            _tool_use("Read", "`x.py`"),
+        ],
+        repo_url=REPO_URL,
+        ref="main",
+    )
+    lines = rendered.splitlines()
+    assert lines[0].startswith("||🧠 Reasoning:")
+    assert lines[1] == "📁 alice/api-service@main"
+
+
+def test_render_empty_transcript_with_repo_shows_placeholder_plus_subtitle() -> None:
+    """Initial state (no events yet) renders the placeholder + subtitle."""
+    rendered = _render([], repo_url=REPO_URL, ref="HEAD")
+    assert rendered == f"{INITIAL_PLACEHOLDER}\n📁 alice/api-service@HEAD"
+
+
+def test_render_empty_transcript_no_repo_is_just_placeholder() -> None:
+    """Initial state with no binding is the bare placeholder, unchanged from pre-Phase-3."""
+    assert _render([], repo_url=None) == INITIAL_PLACEHOLDER
+
+
+def test_render_done_state_keeps_repo_subtitle() -> None:
+    """The repo line stays visible in the final 'done' state too."""
+    transcript = [
+        _tool_use("Read", "`x.py`"),
+        _tool_result("Read", ok=True),
+    ]
+    rendered = _render(
+        transcript,
+        done_footer="✅ Done • 1 tools • 2.0s",
+        repo_url=REPO_URL,
+        ref="main",
+    )
+    lines = rendered.splitlines()
+    assert lines[1] == "📁 alice/api-service@main"
+    assert lines[-1] == "✅ Done • 1 tools • 2.0s"
+
+
+def test_render_truncation_protects_repo_subtitle() -> None:
+    """Even when overflow truncates tool lines, the repo subtitle stays."""
+    transcript = [
+        _tool_use("Read", f"`very/long/path/to/source/file_{i:04d}.py`") for i in range(300)
+    ]
+    rendered = _render(transcript, repo_url=REPO_URL, ref="main")
+    assert len(rendered) <= DISCORD_MESSAGE_LIMIT
+    assert "📁 alice/api-service@main" in rendered
+    assert "earlier tool calls truncated" in rendered
+
+
+def test_short_repo_name_handles_https_url() -> None:
+    from delulu_discord.streaming import _short_repo_name
+
+    assert _short_repo_name("https://github.com/alice/api-service") == "alice/api-service"
+
+
+def test_short_repo_name_handles_https_url_trailing_git() -> None:
+    from delulu_discord.streaming import _short_repo_name
+
+    assert _short_repo_name("https://github.com/alice/api-service.git") == "alice/api-service"
+
+
+def test_short_repo_name_handles_ssh_url() -> None:
+    from delulu_discord.streaming import _short_repo_name
+
+    assert _short_repo_name("git@github.com:alice/api-service.git") == "alice/api-service"
+
+
+def test_short_repo_name_unparseable_falls_back_to_raw() -> None:
+    """Display code must never crash on a weird URL — better to show the raw."""
+    from delulu_discord.streaming import _short_repo_name
+
+    assert _short_repo_name("not-a-url") == "not-a-url"
+
+
+async def test_live_status_passes_repo_to_render() -> None:
+    """LiveStatus's repo_url/ref must thread through to the flush loop's _render call."""
+    msg = _fake_message()
+    live = LiveStatus(msg, repo_url=REPO_URL, ref="main")
+    live.push(_tool_use("Read", "`x.py`"))
+
+    await live._flush_once()
+    msg.edit.assert_called_once()
+    content = msg.edit.call_args.kwargs["content"]
+    assert "📁 alice/api-service@main" in content
+
+
+async def test_live_status_no_repo_omits_subtitle_in_flush() -> None:
+    msg = _fake_message()
+    live = LiveStatus(msg)  # no repo
+    live.push(_tool_use("Read", "`x.py`"))
+
+    await live._flush_once()
+    content = msg.edit.call_args.kwargs["content"]
+    assert "📁" not in content
+
+
+async def test_finalize_done_includes_repo_subtitle() -> None:
+    msg = _fake_message()
+    live = LiveStatus(msg, repo_url=REPO_URL, ref="main")
+    live.push(_tool_use("Read", "`x.py`"))
+    live.push(_tool_result("Read", ok=True))
+
+    await live.finalize_done(num_tools=1, duration_ms=1500)
+    msg.edit.assert_called_once()
+    content = msg.edit.call_args.kwargs["content"]
+    assert "📁 alice/api-service@main" in content
+    assert content.endswith("✅ Done • 1 tools • 1.5s")

@@ -158,6 +158,49 @@ invocations. The secret only seeds the volume on first run — after that
 the volume copy is the source of truth. If auth ever breaks, delete
 `claude-home/` from the volume and re-create the secret.
 
+#### `github-pat` Modal secret (required for deploy, optional for /commit)
+
+The sandbox app's `commit_workspace` Modal function references a
+`github-pat` secret to enable `/commit` push-back to GitHub. The
+secret **must exist** for `modal deploy` to succeed (Modal's
+`Secret.from_name` doesn't have an optionality flag). If you don't
+have a real PAT yet, create the secret with a placeholder value:
+
+```bash
+uv run modal secret create github-pat GITHUB_TOKEN=placeholder
+```
+
+This is enough for the app to deploy. `/commit` will refuse with a
+clear "configure your PAT" message until you replace the placeholder
+with a real token.
+
+When you're ready to enable `/commit`, generate a fine-grained PAT
+at https://github.com/settings/tokens?type=beta with **Contents:
+Read and write** scoped to the specific repos you want the bot to
+push to (matching your allowlist). Then update the secret:
+
+```bash
+uv run modal secret create github-pat GITHUB_TOKEN=ghp_xxxxxx --force
+```
+
+Optional: override the git author identity used for bot commits
+(defaults to `Claude Code <claude@bot.local>`):
+
+```bash
+uv run modal secret create github-pat \
+    GITHUB_TOKEN=ghp_xxxxxx \
+    GIT_AUTHOR_NAME="Han Lee" \
+    GIT_AUTHOR_EMAIL="han@example.com" \
+    --force
+```
+
+Commits made by `/commit` will be authored under that name/email and
+pushed under the PAT owner's GitHub identity. The two don't have to
+match — the author field is cosmetic, the PAT is what GitHub
+authenticates against. For a single-user setup where you want
+commits to look like they came from you, set both to your own
+GitHub name/email and use a PAT scoped to your account.
+
 Deploy the sandbox app (from the repo root):
 
 ```bash

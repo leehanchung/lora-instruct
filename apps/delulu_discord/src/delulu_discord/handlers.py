@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import discord
 import structlog
 
-from delulu_discord.streaming import INITIAL_PLACEHOLDER, LiveStatus
+from delulu_discord.streaming import LiveStatus, _render
 
 if TYPE_CHECKING:
     from delulu_discord.dispatcher import SandboxDispatcher
@@ -48,7 +48,7 @@ class MessageHandler:
         thread_name = prompt[:50].strip() or "Claude Code task"
         thread = await message.create_thread(name=thread_name)
 
-        binding = self.repo_config.get(message.channel.id)
+        binding = await self.repo_config.get(message.channel.id)
         if binding is None:
             repo_url, ref = None, self.settings.default_git_ref
         else:
@@ -120,12 +120,25 @@ class MessageHandler:
         # The flag sticks across edits, so setting it once at post time
         # is enough to keep the live status from unfurling any URLs
         # that might appear in tool summaries.
+        # Render the initial placeholder with the repo subtitle (if
+        # bound) baked in, so the very first state the user sees is
+        # already oriented to the repo. ``_render`` with an empty
+        # transcript and no done_footer returns the placeholder; the
+        # repo line is appended below it when ``repo_url`` is set.
+        # The subsequent flush loop and finalize_done will continue
+        # to pass repo_url/ref through _render so the subtitle stays
+        # visible across the whole message lifecycle.
+        initial_content = _render([], repo_url=session.repo_url, ref=session.ref)
         status_msg = await thread.send(
-            INITIAL_PLACEHOLDER,
+            initial_content,
             allowed_mentions=discord.AllowedMentions.none(),
             suppress_embeds=True,
         )
-        live = LiveStatus(status_msg)
+        live = LiveStatus(
+            status_msg,
+            repo_url=session.repo_url,
+            ref=session.ref,
+        )
         live.start()
 
         final_text = ""

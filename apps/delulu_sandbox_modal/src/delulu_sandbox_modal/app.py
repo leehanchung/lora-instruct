@@ -42,7 +42,7 @@ sandbox_image = (
     # builder only supports Python 3.10–3.12. Set workspace-wide with:
     #   modal config set image_builder_version 2025.06
     modal.Image.debian_slim(python_version="3.14")
-    .apt_install("git", "curl")
+    .apt_install("git", "curl", "ca-certificates")
     # app.py is imported inside the sandbox to call run_claude_code, so any
     # third-party module it imports at module level must be present here too.
     .pip_install("structlog>=24.0")
@@ -52,7 +52,34 @@ sandbox_image = (
         "apt-get install -y nodejs",
         # Install Claude Code globally
         "npm install -g @anthropic-ai/claude-code",
+        # Install the GitHub CLI (`gh`) so Claude can push branches,
+        # open pull requests, list issues, etc. directly via its Bash
+        # tool when the user asks for things like "commit and open a
+        # PR." Uses GitHub's official apt repo — shorter install path
+        # than downloading the .deb manually and also gets security
+        # updates via `apt upgrade` on future image rebuilds.
+        "mkdir -p -m 755 /etc/apt/keyrings",
+        (
+            "curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg "
+            "| tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null "
+            "&& chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg"
+        ),
+        (
+            'echo "deb [arch=$(dpkg --print-architecture) '
+            "signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] "
+            'https://cli.github.com/packages stable main" '
+            "| tee /etc/apt/sources.list.d/github-cli.list > /dev/null"
+        ),
+        "apt-get update && apt-get install -y gh",
     )
+    # Bundle the whole `delulu_sandbox_modal` package into the image so
+    # that runtime `from delulu_sandbox_modal import repo_provisioner`
+    # resolves inside the container. `modal deploy` only auto-mounts
+    # the entry file (app.py) at /root/app.py by default — sibling
+    # modules in the same package have to be added explicitly. Without
+    # this line, provision_workspace crashes at import time with
+    # `ModuleNotFoundError: No module named 'delulu_sandbox_modal'`.
+    .add_local_python_source("delulu_sandbox_modal")
 )
 
 # ── Secrets ──────────────────────────────────────────────────
@@ -64,6 +91,29 @@ sandbox_image = (
 #   modal secret create claude-oauth \
 #     CLAUDE_CREDENTIALS_JSON="$(cat ~/.claude/.credentials.json)"
 claude_oauth_secret = modal.Secret.from_name("claude-oauth")
+
+# GitHub PAT for /commit push-back. The secret MUST exist for the
+# Modal app to deploy — Modal's `Secret.from_name` doesn't have an
+# optionality flag. To set up:
+#
+#     modal secret create github-pat GITHUB_TOKEN=ghp_xxxxxx
+#
+# The token can be a placeholder if /commit isn't going to be used
+# yet (e.g. `GITHUB_TOKEN=placeholder`); the runtime check in
+# `commit_workspace` will refuse-and-instruct when the value is
+# empty or doesn't look like a real PAT, leaving the workspace
+# untouched. Replace with a real fine-grained PAT scoped to the
+# repos in the allowlist when ready to enable push.
+#
+# Optional override env vars on the same secret control the git
+# author identity used for bot commits (defaults: "Claude Code"
+# / "claude@bot.local"):
+#
+#     modal secret create github-pat \
+#         GITHUB_TOKEN=ghp_xxxxxx \
+#         GIT_AUTHOR_NAME="Han Lee" \
+#         GIT_AUTHOR_EMAIL="han@example.com"
+github_pat_secret = modal.Secret.from_name("github-pat")
 
 
 # ── Stream-json helpers (module-level for testability) ───────
@@ -182,6 +232,10 @@ provisioner_image = (
     modal.Image.debian_slim(python_version="3.14")
     .apt_install("git", "ca-certificates")
     .pip_install("structlog>=24.0")
+    # Same rationale as sandbox_image above — provision_workspace
+    # and commit_workspace both import `repo_provisioner` at
+    # runtime, so the package has to be in the container.
+    .add_local_python_source("delulu_sandbox_modal")
 )
 
 
@@ -239,11 +293,126 @@ def provision_workspace(
     return workspace_path
 
 
+# ── Commit-back Modal Function ───────────────────────────────
+# Dedicated function for /commit. Stages, commits, and pushes the
+# pending changes in a thread's workspace to a `claude/<thread_id>`
+# branch on the upstream repo.
+#
+# Same `provisioner_image` as `provision_workspace` — we only need
+# git, not Claude Code or nodejs. NOT decorated with
+# `max_containers=1`: each /commit invocation operates on a
+# distinct per-thread workspace, so there's no cross-call contention
+# and the Modal hop overhead is wasted. (Same-thread races are
+# avoided at the bot level — Discord serializes a single user's
+# slash command invocations per channel.)
+@app.function(
+    image=provisioner_image,
+    volumes={"/vol": volume},
+    secrets=[github_pat_secret],
+    timeout=120,
+)
+def commit_workspace(thread_id: int, message: str) -> dict[str, Any]:
+    """Stage, commit, and push pending changes in the thread's workspace.
+
+    Pre-flight check: refuses with ``status="no_pat"`` if the
+    ``GITHUB_TOKEN`` env var (from the github-pat secret) is empty
+    or missing. **No local commit is made in that case** — refuse-
+    and-instruct semantics, decided in
+    ``prd/repo-provisioning.md``'s "Commit-back flow" section.
+
+    Returns a dict (not a dataclass — Modal needs JSON-serializable
+    return values) with one of these shapes:
+
+        {"status": "ok", "branch": ..., "commit_sha": ...,
+         "pr_compare_url": ...}
+        {"status": "no_pat"}
+        {"status": "no_workspace", "error": "..."}
+        {"status": "no_changes"}
+        {"status": "push_failed", "branch": ..., "commit_sha": ...,
+         "error": "..."}
+    """
+    import os
+
+    # Lazy import — same rationale as in `provision_workspace`.
+    from delulu_sandbox_modal import repo_provisioner
+
+    # Pre-flight: refuse-and-instruct on missing PAT. Empty-string
+    # is the documented "secret exists but value is a placeholder"
+    # state — we treat it as missing.
+    github_token = (os.environ.get("GITHUB_TOKEN") or "").strip()
+    if not github_token or github_token == "placeholder":
+        logger.info(
+            "commit.refused_no_pat",
+            thread_id=thread_id,
+        )
+        return {"status": "no_pat"}
+
+    # Optional author identity overrides — see the secret comment
+    # at the top of this file.
+    author_name = os.environ.get("GIT_AUTHOR_NAME") or repo_provisioner.DEFAULT_GIT_AUTHOR_NAME
+    author_email = os.environ.get("GIT_AUTHOR_EMAIL") or repo_provisioner.DEFAULT_GIT_AUTHOR_EMAIL
+
+    # The workspace must be loaded from the most recently committed
+    # state of the volume — `provision_workspace` (or any concurrent
+    # /commit on this same thread, though that's prevented by
+    # bot-side serialization) might have changed it since this
+    # container started.
+    volume.reload()
+
+    result = repo_provisioner.commit_workspace_changes(
+        thread_id=thread_id,
+        message=message,
+        github_token=github_token,
+        author_name=author_name,
+        author_email=author_email,
+    )
+
+    logger.info(
+        "commit.result",
+        thread_id=thread_id,
+        status=result.status,
+        branch=result.branch,
+        commit_sha=result.commit_sha,
+        error=result.error,
+    )
+
+    # Commit the volume so the new commit on the local branch is
+    # persisted across container restarts (in case the user runs
+    # /commit again later from a fresh container).
+    volume.commit()
+
+    # Convert to a plain dict for Modal serialization. dataclass
+    # instances aren't auto-serializable across the Modal RPC
+    # boundary in all versions — using a dict is the safe lowest-
+    # common-denominator.
+    return {
+        "status": result.status,
+        "branch": result.branch,
+        "commit_sha": result.commit_sha,
+        "pr_compare_url": result.pr_compare_url,
+        "error": result.error,
+    }
+
+
 # ── Modal Function (runs inside the sandbox) ─────────────────
+# `github_pat_secret` is attached here (in addition to
+# `commit_workspace`) so Claude can natively use `git push` and
+# `gh pr create` via its Bash tool when the user asks for things
+# like "commit and open a PR." Previously the PAT was only
+# available in the dedicated /commit flow; expanding access lets
+# the @claude natural-language path handle the full branch →
+# commit → push → PR loop without a slash command.
+#
+# Security note: the PAT becomes visible to any `run_claude_code`
+# invocation, not just `commit_workspace`. A rogue/prompt-injected
+# Claude has access to anything the PAT can do on the allowlisted
+# repos. For the v1 single-user scope this is acceptable; see
+# `prd/repo-provisioning.md`'s access-control section for why the
+# allowlist + narrow PAT scope is the primary defense.
 @app.function(
     image=sandbox_image,
     volumes={"/vol": volume},
-    secrets=[claude_oauth_secret],
+    secrets=[claude_oauth_secret, github_pat_secret],
     memory=4096,
     timeout=300,
 )
@@ -392,6 +561,57 @@ def run_claude_code(
         # --output-format stream-json requires --verbose in Claude Code;
         # without it, CC errors out before producing any events.
         "--verbose",
+        # Per-tool allowlist so file edits, writes, and shell commands
+        # execute without prompting in -p mode. The earlier attempt at
+        # `--dangerously-skip-permissions` (PR #53) was correct in
+        # spirit but hit Claude Code's hard refusal:
+        #
+        #     Claude Code exited with code 1:
+        #     --dangerously-skip-permissions cannot be used with
+        #     root/sudo privileges for security reasons
+        #
+        # Modal containers run as root by default, and Claude Code
+        # specifically blocks bypassPermissions mode under root
+        # regardless of the actual threat model — running the sandbox
+        # as non-root would be cleaner but requires a substantial image
+        # rewrite (user creation, /vol ownership, node_modules perms,
+        # HOME directory migration).
+        #
+        # `--allowedTools` takes an explicit per-tool allowlist and
+        # doesn't have the root check — it's a targeted "these specific
+        # tools don't need a prompt" rather than a blanket "bypass all
+        # prompts." Per the Claude Code CLI docs, tools listed here
+        # execute without prompting; tools NOT listed still fall through
+        # to the default mode (which in -p mode means refused).
+        #
+        # The list below covers every tool Claude Code commonly uses
+        # for a code-editing task. Read/Glob/Grep are redundant (they're
+        # always allowed anyway) but listed for clarity — the file is
+        # supposed to be "here's the whole set of tools this bot is
+        # allowed to use," not "here's the minimum delta over the
+        # implicit defaults."
+        #
+        # If Claude Code adds a new tool in a future version that we
+        # forgot to list, it'll fall through to the refused path and
+        # we'll see a ✗ in the status message rather than silent
+        # surprise — fail-closed is the right default.
+        #
+        # Safe because the Modal sandbox is the trust boundary — see
+        # PR #53's commit message for the full argument. Each invocation
+        # is an ephemeral container with only /vol mounted, a 300s
+        # wall-clock timeout, and no access to production systems.
+        "--allowedTools",
+        "Bash",
+        "Edit",
+        "Glob",
+        "Grep",
+        "NotebookEdit",
+        "Read",
+        "Task",
+        "TodoWrite",
+        "WebFetch",
+        "WebSearch",
+        "Write",
     ]
     if resume:
         # --continue resumes the most recent Claude Code session in the cwd.
@@ -406,6 +626,28 @@ def run_claude_code(
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
     env["HOME"] = claude_home
     env["CLAUDE_PROJECT_DIR"] = workspace_path
+
+    # Surface the GitHub PAT to `gh` CLI and `git`. The `github-pat`
+    # Modal secret sets `GITHUB_TOKEN` in the container; `gh` also
+    # reads `GH_TOKEN` and prefers it. Setting both covers every
+    # codepath Claude's Bash tool might reach for (gh pr create,
+    # git push over HTTPS, etc.). If the secret value is a
+    # placeholder or empty, these env vars will be empty strings —
+    # gh/git will then refuse with their own clean error messages
+    # rather than accidentally authenticating as nobody.
+    github_token = env.get("GITHUB_TOKEN", "").strip()
+    if github_token and github_token != "placeholder":
+        env["GH_TOKEN"] = github_token
+        # Re-assign GITHUB_TOKEN in case the secret value had
+        # trailing whitespace — both gh and git are sensitive to that.
+        env["GITHUB_TOKEN"] = github_token
+    else:
+        # Scrub placeholder/empty values so `gh auth status` and
+        # `git push` fail cleanly with "not authenticated" instead
+        # of trying to use the literal string "placeholder" as a
+        # credential and getting a confusing 401.
+        env.pop("GH_TOKEN", None)
+        env.pop("GITHUB_TOKEN", None)
 
     logger.info(
         "sandbox.exec",
