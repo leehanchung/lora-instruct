@@ -1,6 +1,6 @@
 ---
-description: Review a pull request for the SMILE-factory monorepo. Produces exactly one advisory PR review (approve or comment, never request-changes) via `gh pr review --body-file`.
-allowed-tools: Write, WebFetch, Bash(gh pr review:*)
+description: Review a pull request for the SMILE-factory monorepo. Produces exactly one advisory PR review (approve or comment, never request-changes) with inline comments on specific lines via the GitHub Reviews API.
+allowed-tools: Write, WebFetch, Bash(gh pr review:*), Bash(gh api:*)
 ---
 
 # PR review — SMILE-factory
@@ -13,10 +13,10 @@ with three project-specific adaptations:
 1. Scoped to the delulu Discord orchestrator architecture and its
    boundary invariants (see below).
 2. **Approve-or-comment only.** Never `--request-changes`.
-3. Submits exactly one top-level formal review via `gh pr review
-   --body-file`, rather than posting inline comments. Our workflow
-   wires the review into GitHub's Reviewers box so branch protection
-   can gate on it.
+3. Submits exactly one formal review via the GitHub Reviews API with
+   **inline comments on specific diff lines** plus a top-level
+   summary body. Our workflow wires the review into GitHub's
+   Reviewers box so branch protection can gate on it.
 
 ## Repository context
 
@@ -124,27 +124,20 @@ block on them** — the project has minimal test infrastructure today.
 If you are not certain an issue is real, **do not flag it.** False
 positives erode trust and waste reviewer time.
 
-### Step 5 — Write the review body
+### Step 5 — Write the review payload
 
-Use the `Write` tool to save the review body to `/tmp/review.md`.
-**Do not use shell heredoc (`cat > file <<EOF`)** — markdown with
-code fences and backticks collides with bash quoting, which has
-caused duplicate-review pollution in the past.
+Build two artifacts using the `Write` tool. **Do not use shell
+heredoc (`cat > file <<EOF`)** — markdown with code fences and
+backticks collides with bash quoting, which has caused
+duplicate-review pollution in the past.
 
-Body format:
+#### 5a — Summary body (`/tmp/review.md`)
 
 ```markdown
 ## Review summary
 
 <one-sentence verdict: "LGTM", "minor observations", or
 "flagging N issues for human review">
-
-## Findings
-
-<list of high-signal issues grouped by priority. Only include this
-section if there are findings. Each finding should include file +
-line range, the issue, and why it's high-signal. Skip this section
-entirely if no findings.>
 
 ## Deployment
 
@@ -154,25 +147,80 @@ if the PR doesn't touch either app.>
 
 Keep the body concise. Do not manufacture content to fill space.
 
+#### 5b — Inline comments (`/tmp/review_comments.json`)
+
+A JSON object with a `comments` array. Each comment has:
+
+```json
+{
+  "comments": [
+    {
+      "path": "relative/file/path.py",
+      "line": 42,
+      "body": "**Priority 1 — Correctness:** Brief description of the issue."
+    }
+  ]
+}
+```
+
+- `path` — file path relative to repo root (must match the path in
+  the diff exactly).
+- `line` — the line number in the **new version** of the file where
+  the comment should appear. Must be a line that is part of the
+  diff hunk (added or context line visible in the diff). If the
+  issue spans a range, use the last line of the range.
+- `body` — the comment text. Prefix with the priority category
+  (e.g. "**Priority 1 — Correctness:**"). Keep it specific and
+  actionable.
+
+If there are no findings, write `{"comments": []}`.
+
+**Line number rules:**
+- Only reference lines that appear in the diff (added lines or
+  unchanged context lines within a hunk). GitHub will reject
+  comments on lines outside the diff.
+- Use the line number from the new file (right side of the diff),
+  not the old file.
+
 ### Step 6 — Submit exactly one review
 
-**Your review is advisory, not blocking.** Pick exactly one of:
+**Your review is advisory, not blocking.**
 
-- No substantive issues →
-  `gh pr review <N> --approve --body-file /tmp/review.md`
-- Issues / observations / questions →
-  `gh pr review <N> --comment --body-file /tmp/review.md`
+Read `/tmp/review.md` into a shell variable for the body, then
+submit via the GitHub Reviews API using `gh api`. This single call
+posts both the top-level summary and all inline comments atomically.
 
-**Do not use `--request-changes`.** A request-changes review gives
+Pick the event based on findings:
+
+- No substantive issues → `event=APPROVE`
+- Issues / observations / questions → `event=COMMENT`
+
+**Do not use `REQUEST_CHANGES`.** A request-changes review gives
 your individual judgment a hard veto over merges, and you can be
 wrong. High-confidence findings still go in the comment body — the
 human reviewer decides whether they block merge.
 
+Submit using `gh api`:
+
+```bash
+REVIEW_BODY=$(cat /tmp/review.md)
+gh api \
+  "repos/{owner}/{repo}/pulls/<N>/reviews" \
+  --method POST \
+  -f event="APPROVE" \
+  -f body="$REVIEW_BODY" \
+  --input /tmp/review_comments.json \
+  --jq '.html_url'
+```
+
+`gh api --input` sends the JSON file as the request body, and the
+`-f` flags are merged on top. The final request contains `event`,
+`body`, and `comments`.
+
 **Never retry on apparent failure.** One attempt, one outcome.
 Duplicate reviews pollute the PR history.
 
-**The only permitted fallback:** if `gh pr review <N> --approve`
-fails with a "cannot approve your own pull request" error, fall
-back to `gh pr review <N> --comment --body-file /tmp/review.md`
-with the same body file. One retry maximum, only for this specific
-error.
+**The only permitted fallback:** if submitting with `APPROVE` fails
+with a "cannot approve your own pull request" error, fall back to
+the same call with `event=COMMENT`. One retry maximum, only for
+this specific error.

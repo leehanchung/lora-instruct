@@ -1,0 +1,78 @@
+name: Codex Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  review:
+    name: Codex PR review
+    if: >-
+      github.event.pull_request.draft == false
+      && github.event.pull_request.user.login != 'claude[bot]'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: codex-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+
+      - name: Pre-fetch base and head refs
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          git fetch --no-tags origin \
+            "$PR_BASE_REF" \
+            "+refs/pull/$PR_NUMBER/head"
+
+      - name: Run Codex
+        id: run_codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt: |
+            This is PR #${{ github.event.pull_request.number }} for ${{ github.repository }}.
+
+            Review ONLY the changes introduced by the PR, so consider:
+               git log --oneline ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}
+
+            Suggest any improvements, potential bugs, or issues.
+            Be concise and specific in your feedback.
+
+            Pull request title and body:
+            ----
+            ${{ github.event.pull_request.title }}
+            ${{ github.event.pull_request.body }}
+
+            IMPORTANT: End your response with exactly one of these on its
+            own line:
+            VERDICT: APPROVE
+            VERDICT: COMMENT
+
+            Use APPROVE if the code looks good with no substantive issues.
+            Use COMMENT if you found issues worth addressing.
+
+      - name: Submit review
+        if: steps.run_codex.outputs.final-message != ''
+        env:
+          CODEX_MESSAGE: ${{ steps.run_codex.outputs.final-message }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if echo "$CODEX_MESSAGE" | grep -q "^VERDICT: APPROVE"; then
+            EVENT="APPROVE"
+          else
+            EVENT="COMMENT"
+          fi
+          BODY=$(echo "$CODEX_MESSAGE" | sed '/^VERDICT: /d')
+          gh api \
+            "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews" \
+            --method POST \
+            -f event="$EVENT" \
+            -f body="$BODY" \
+            --jq '.html_url'
