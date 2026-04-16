@@ -613,8 +613,7 @@ def _push_with_askpass(
             f"git push origin {branch} failed (exit {exc.returncode}).\n"
             f"Remote: {origin_url}\n"
             f"GIT_ASKPASS: {askpass_path}\n"
-            f"PAT length: {len(github_token)} chars, "
-            f"starts with: {github_token[:10]}...\n"
+            f"PAT length: {len(github_token)} chars\n"
             f"stderr (with GIT_TRACE):\n{stderr_preview}"
         ) from exc
     finally:
