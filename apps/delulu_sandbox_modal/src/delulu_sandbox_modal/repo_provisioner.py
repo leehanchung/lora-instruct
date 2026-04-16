@@ -461,44 +461,31 @@ def commit_workspace_changes(
     sha_result = _run_git(["-C", workspace_path, "rev-parse", "HEAD"])
     commit_sha = sha_result.stdout.strip()
 
-    # Push via URL-embedded PAT credentials, passing the full
-    # https://x-access-token:<pat>@host/owner/repo[.git] URL as a
-    # one-off argument to `git push`. We used to use
-    # `-c http.extraheader=Authorization: Basic <base64>` but git
-    # would intermittently fall through to the interactive
-    # credential prompt in the sandbox, producing:
+    # Push using GIT_ASKPASS — git's own non-interactive credential
+    # mechanism. We write a tiny temp shell script that provides
+    # username + password when git prompts, and point GIT_ASKPASS at
+    # it. The remote URL stays untouched (no URL-embedded credentials).
     #
-    #     fatal: could not read Username for 'https://github.com':
-    #     No such device or address
+    # Why not URL-embedded credentials? Four failed attempts:
     #
-    # when git tries to read `/dev/tty` in our non-interactive
-    # subprocess. http.extraheader is subtly dependent on the
-    # credential helper chain, URL normalization, and whether git
-    # considers the hostname scope a match — all of which can vary
-    # across git versions and repo configs. URL-embedded
-    # credentials are the boring-but-reliable alternative: they
-    # bypass git's credential helper machinery entirely because
-    # the auth is in the URL itself.
-    origin_result = _run_git(
-        ["-C", workspace_path, "config", "--get", "remote.origin.url"],
-    )
-    origin_url = origin_result.stdout.strip()
-    push_url = _build_push_url_with_pat(origin_url, github_token)
-
+    # 1. `-c http.extraheader=Authorization: Basic <b64>` — git
+    #    intermittently fell through to interactive prompt.
+    # 2. `x-access-token:<pat>@github.com` in URL — the
+    #    x-access-token username is for GitHub App tokens, not PATs.
+    #    GitHub rejects with misleading "password auth not supported."
+    # 3. `<pat>@github.com` (token-only userinfo) — GitHub rejects
+    #    the empty password; git prompted interactively for password.
+    # 4. `git:<pat>@github.com` — GitHub still rejects with
+    #    "Invalid username or token. Password authentication is not
+    #    supported for Git operations."
+    #
+    # GIT_ASKPASS avoids ALL of these by not touching the URL at all.
+    # Git's own credential prompting asks our script for username +
+    # password, and we provide them. No URL encoding issues, no
+    # username convention issues, no auth-layer routing issues.
     try:
-        _run_git(["-C", workspace_path, "push", push_url, branch])
+        _push_with_askpass(workspace_path, branch, github_token)
     except RuntimeError as exc:
-        # Push failed — most commonly an invalid/expired PAT (401)
-        # or insufficient scopes. The local commit DID land on the
-        # workspace's branch, so the user can re-run /commit after
-        # rotating the PAT and the next push will catch up. Surface
-        # the git error to the bot so the user sees actionable
-        # detail instead of a generic "push failed."
-        #
-        # **Scrub the PAT** before surfacing: `_run_git`'s error
-        # message includes the full args, and one of those args is
-        # the push URL with the PAT embedded. Leaving it raw would
-        # leak the token into Discord message bodies and bot logs.
         return CommitResult(
             status="push_failed",
             branch=branch,
@@ -516,78 +503,133 @@ def commit_workspace_changes(
     )
 
 
-# Placeholder username for URL-embedded PAT auth. Can be any
-# non-empty string — GitHub ignores the username field for PAT
-# auth and uses the password field (the actual PAT) to look up
-# the authenticated identity. ``git`` is innocuous, unambiguous,
-# and doesn't trigger any special routing on GitHub's auth layer.
-#
-# Do NOT use ``x-access-token`` here — that's the GitHub App
-# installation-token convention, and GitHub's auth layer routes
-# it to the App-token handler which expects a different token
-# format, then rejects PATs with a misleading "password
-# authentication not supported" error. See the docstring below
-# for the full saga.
-_PAT_URL_USERNAME = "git"
+def _push_with_askpass(
+    workspace_path: str,
+    branch: str,
+    github_token: str,
+) -> None:
+    """Push to ``origin`` using ``GIT_ASKPASS`` for non-interactive auth.
+
+    Writes a tiny temp shell script that provides credentials when
+    git prompts, sets ``GIT_ASKPASS`` to point at it, and runs
+    ``git push origin <branch>``. The remote URL is **untouched** —
+    no URL-embedded credentials, no ``http.extraheader``, no
+    credential helper config changes.
+
+    ``GIT_ASKPASS`` is git's own non-interactive credential mechanism
+    (see ``git-credential(7)``). Git calls the script once for the
+    username prompt and once for the password prompt, reading the
+    response from stdout. We provide ``git`` as a placeholder
+    username and the PAT as the password — matching what GitHub's
+    interactive HTTPS flow expects.
+
+    **Why not URL-embedded credentials?** Four failed attempts at
+    building the push URL with credentials led to four distinct
+    failure modes across GitHub's auth layer (see the comments in
+    ``commit_workspace_changes`` for the full saga). GIT_ASKPASS
+    sidesteps ALL of them because it never touches the URL — it
+    operates at git's credential-prompting layer instead of the
+    URL-parsing layer.
+
+    The temp script is deleted in a ``finally`` block so the PAT
+    doesn't persist on disk beyond the push invocation.
+    """
+    import stat
+    import tempfile
+
+    # The script provides username + password when git asks.
+    # GIT_ASKPASS is called with the prompt string as $1:
+    #   "Username for 'https://github.com': " → echo git
+    #   "Password for 'https://github.com': " → echo <pat>
+    # Single-quoted echo prevents shell expansion of the PAT.
+    # PATs are alphanumeric + underscores, so no metachar risk,
+    # but single quotes are a good habit for credential scripts.
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".sh",
+        delete=False,
+        dir="/tmp",
+        prefix="git-askpass-",
+    ) as f:
+        f.write("#!/bin/sh\n")
+        f.write('case "$1" in\n')
+        f.write("  Username*) echo 'git' ;;\n")
+        f.write(f"  Password*) echo '{github_token}' ;;\n")
+        f.write("esac\n")
+        askpass_path = f.name
+    os.chmod(askpass_path, stat.S_IRWXU)
+
+    # Capture the remote URL for diagnostics (sanitized — no PAT).
+    try:
+        origin_result = subprocess.run(
+            ["git", "-C", workspace_path, "config", "--get", "remote.origin.url"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        origin_url = origin_result.stdout.strip()
+    except Exception:
+        origin_url = "<unknown>"
+
+    try:
+        subprocess.run(
+            ["git", "-C", workspace_path, "push", "origin", branch],
+            check=True,
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                "GIT_ASKPASS": askpass_path,
+                # Suppress the fallback to /dev/tty if GIT_ASKPASS
+                # somehow fails. Without this, a broken script would
+                # hang the sandbox waiting for interactive input.
+                "GIT_TERMINAL_PROMPT": "0",
+                # ── Observability flags for diagnosing push failures ──
+                # GIT_TRACE: logs git's internal operations (which
+                # credential helper it calls, how it resolves the URL,
+                # what HTTP method it uses) to stderr.
+                # GIT_CURL_VERBOSE: shows HTTP request/response headers
+                # (git strips Authorization headers from the output by
+                # default, so the PAT is safe). Both go to stderr which
+                # we capture and surface in the error message.
+                "GIT_TRACE": "1",
+                "GIT_CURL_VERBOSE": "1",
+            },
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+
+        # Build a diagnostics block that'll show up in the Discord
+        # error message. This is what makes the next failure
+        # diagnosable without guessing — the stderr with GIT_TRACE
+        # includes which credential helper git called, whether
+        # GIT_ASKPASS was invoked, and the actual HTTP response from
+        # GitHub's server.
+        #
+        # Truncate stderr to 1500 chars to fit Discord's 2000-char
+        # message limit after the surrounding text.
+        stderr_preview = stderr[:1500]
+        raise RuntimeError(
+            f"git push origin {branch} failed (exit {exc.returncode}).\n"
+            f"Remote: {origin_url}\n"
+            f"GIT_ASKPASS: {askpass_path}\n"
+            f"PAT length: {len(github_token)} chars\n"
+            f"stderr (with GIT_TRACE):\n{stderr_preview}"
+        ) from exc
+    finally:
+        try:
+            os.unlink(askpass_path)
+        except OSError:
+            pass
 
 
 def _build_push_url_with_pat(origin_url: str, github_token: str) -> str:
-    """Return the origin URL with ``git:<pat>`` credentials embedded.
+    """**DEPRECATED** — kept only for tests that haven't been migrated.
 
-    Transforms ``https://github.com/owner/repo[.git]`` into
-    ``https://git:<pat>@github.com/owner/repo[.git]``.
-
-    The PAT is placed in the **password** field of the HTTP Basic
-    auth component, with ``git`` as a placeholder username. GitHub's
-    docs describe the interactive form as:
-
-        Username: YOUR-USERNAME
-        Password: YOUR-PERSONAL-ACCESS-TOKEN
-
-    Reference: https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens
-
-    The username can be any non-empty string — GitHub ignores it and
-    looks up the authenticated user from the PAT — so we use ``git``
-    as an innocuous placeholder instead of the user's actual GitHub
-    handle (which the sandbox doesn't have in its environment).
-
-    **The saga of getting this right, for the next person who
-    touches this code:**
-
-    1. **First attempt (PR #56, first rev):** used ``http.extraheader``
-       with ``Authorization: Basic <base64(x-access-token:<pat>)>``.
-       Git intermittently fell through to the interactive credential
-       prompt and failed with "could not read Username: No such
-       device or address."
-
-    2. **Second attempt (PR #56, second rev):** embedded
-       ``x-access-token:<pat>@github.com`` in the URL. GitHub's
-       server rejected it with "Invalid username or password.
-       Password authentication is not supported for Git operations."
-       Root cause: ``x-access-token`` is for GitHub App installation
-       tokens, not PATs — GitHub's auth layer routes it to the
-       App-token handler, which expects a different token format,
-       fails the pattern match, and falls back to a misleading error
-       message.
-
-    3. **Third attempt (PR #58):** used ``<pat>@github.com`` with no
-       username prefix, matching the ``https://TOKEN@github.com/...``
-       form that appears in some GitHub documentation. Git accepted
-       the token as the username (fair — it's the whole userinfo),
-       but GitHub's server rejected the empty password field and git
-       prompted for one interactively, failing with "could not read
-       Password: No such device or address."
-
-    4. **Fourth attempt (this function):** ``git:<pat>@github.com``.
-       Placeholder username + PAT as password. This matches what
-       GitHub's own docs describe for the interactive flow, and is
-       the canonical non-interactive equivalent. Should finally
-       work.
-
-    Only HTTPS URLs are supported. SSH URLs (``git@github.com:…``)
-    don't have a place for a PAT because SSH auth is keypair-based.
-    The ``/commit`` flow is single-shared-PAT-only anyway (see the
-    PRD's v1 scope notes), so anything non-HTTPS is rejected loudly.
+    URL-embedded credentials don't work reliably on GitHub — see the
+    ``_push_with_askpass`` function and the comments in
+    ``commit_workspace_changes`` for the five-attempt saga. Do NOT
+    use this function for new code.
     """
     from urllib.parse import urlparse, urlunparse
 
@@ -606,9 +648,7 @@ def _build_push_url_with_pat(origin_url: str, github_token: str) -> str:
     if not host:
         raise ValueError(f"cannot parse host from origin URL {origin_url!r}")
 
-    # ``<placeholder-username>:<pat>@host[:port]``. See the
-    # docstring for the fourth-attempt story.
-    netloc = f"{_PAT_URL_USERNAME}:{github_token}@{host}"
+    netloc = f"git:{github_token}@{host}"
     if parsed.port:
         netloc = f"{netloc}:{parsed.port}"
 
