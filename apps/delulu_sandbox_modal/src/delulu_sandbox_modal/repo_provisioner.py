@@ -552,6 +552,10 @@ def _push_with_askpass(
         prefix="git-askpass-",
     ) as f:
         f.write("#!/bin/sh\n")
+        # Log to stderr so we can confirm the script was actually
+        # invoked — previous failures had us wondering whether git
+        # was even calling GIT_ASKPASS.
+        f.write('echo "ASKPASS: called with prompt: $1" >&2\n')
         f.write('case "$1" in\n')
         f.write("  Username*) echo 'git' ;;\n")
         f.write(f"  Password*) echo '{github_token}' ;;\n")
@@ -584,37 +588,30 @@ def _push_with_askpass(
                 # somehow fails. Without this, a broken script would
                 # hang the sandbox waiting for interactive input.
                 "GIT_TERMINAL_PROMPT": "0",
-                # ── Observability flags for diagnosing push failures ──
-                # GIT_TRACE: logs git's internal operations (which
-                # credential helper it calls, how it resolves the URL,
-                # what HTTP method it uses) to stderr.
-                # GIT_CURL_VERBOSE: shows HTTP request/response headers
-                # (git strips Authorization headers from the output by
-                # default, so the PAT is safe). Both go to stderr which
-                # we capture and surface in the error message.
+                # GIT_TRACE shows which credential helpers git calls
+                # and what commands it runs. Dropped GIT_CURL_VERBOSE
+                # because the TLS handshake output was filling the
+                # entire stderr budget and truncating before the
+                # actual error.
                 "GIT_TRACE": "1",
-                "GIT_CURL_VERBOSE": "1",
             },
         )
     except subprocess.CalledProcessError as exc:
         stderr = (exc.stderr or "").strip()
 
-        # Build a diagnostics block that'll show up in the Discord
-        # error message. This is what makes the next failure
-        # diagnosable without guessing — the stderr with GIT_TRACE
-        # includes which credential helper git called, whether
-        # GIT_ASKPASS was invoked, and the actual HTTP response from
-        # GitHub's server.
-        #
-        # Truncate stderr to 1500 chars to fit Discord's 2000-char
-        # message limit after the surrounding text.
-        stderr_preview = stderr[:1500]
+        # Take the LAST 2000 chars of stderr — the actual error
+        # message and GitHub's response are at the end, not the
+        # beginning. Previous versions took the first 1500 chars
+        # which was entirely consumed by TLS handshake noise from
+        # GIT_CURL_VERBOSE (now removed), truncating before the
+        # useful part.
+        stderr_tail = stderr[-2000:] if len(stderr) > 2000 else stderr
         raise RuntimeError(
             f"git push origin {branch} failed (exit {exc.returncode}).\n"
             f"Remote: {origin_url}\n"
             f"GIT_ASKPASS: {askpass_path}\n"
             f"PAT length: {len(github_token)} chars\n"
-            f"stderr (with GIT_TRACE):\n{stderr_preview}"
+            f"stderr (last 2000 chars, with GIT_TRACE):\n{stderr_tail}"
         ) from exc
     finally:
         try:
