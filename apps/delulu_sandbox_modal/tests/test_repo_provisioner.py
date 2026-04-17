@@ -14,6 +14,8 @@ directory. Cheap insurance.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from delulu_sandbox_modal.repo_provisioner import _parse_repo_url
@@ -271,6 +273,97 @@ class TestScrubPat:
         from delulu_sandbox_modal.repo_provisioner import _scrub_pat
 
         assert _scrub_pat("no secrets here", "ghp_xxx") == "no secrets here"
+
+
+class TestMakeBranchName:
+    """Branch naming from conventional-commit messages."""
+
+    def test_feat_prefix(self):
+        from delulu_sandbox_modal.repo_provisioner import _make_branch_name
+
+        assert (
+            _make_branch_name(1234567890, "feat: add rate limiting")
+            == "feat/add-rate-limiting-567890"
+        )
+
+    def test_fix_prefix(self):
+        from delulu_sandbox_modal.repo_provisioner import _make_branch_name
+
+        assert (
+            _make_branch_name(1234567890, "fix: resolve timeout bug")
+            == "fix/resolve-timeout-bug-567890"
+        )
+
+    def test_docs_prefix(self):
+        from delulu_sandbox_modal.repo_provisioner import _make_branch_name
+
+        assert _make_branch_name(42, "docs: update README") == "docs/update-readme-42"
+
+    def test_scoped_type(self):
+        from delulu_sandbox_modal.repo_provisioner import _make_branch_name
+
+        result = _make_branch_name(99, "fix(auth): resolve timeout")
+        assert result.startswith("fix/")
+        assert "resolve-timeout" in result
+
+    def test_no_type_prefix_falls_back_to_claude(self):
+        from delulu_sandbox_modal.repo_provisioner import _make_branch_name
+
+        result = _make_branch_name(42, "just update the readme")
+        assert result.startswith("claude/")
+        assert "update-the-readme" in result
+
+    def test_long_subject_truncated(self):
+        from delulu_sandbox_modal.repo_provisioner import _make_branch_name
+
+        long_msg = "feat: " + "a" * 200
+        result = _make_branch_name(42, long_msg)
+        slug_part = result.split("/", 1)[1].rsplit("-", 1)[0]
+        assert len(slug_part) <= 50
+
+    def test_special_chars_slugified(self):
+        from delulu_sandbox_modal.repo_provisioner import _make_branch_name
+
+        result = _make_branch_name(42, "feat: add rate-limiting & auth!")
+        assert result.startswith("feat/")
+        assert "&" not in result
+        assert "!" not in result
+
+    def test_case_insensitive_type(self):
+        from delulu_sandbox_modal.repo_provisioner import _make_branch_name
+
+        result = _make_branch_name(42, "FEAT: add something")
+        assert result.startswith("feat/")
+
+    def test_thread_id_suffix_is_last_6_digits(self):
+        from delulu_sandbox_modal.repo_provisioner import _make_branch_name
+
+        result = _make_branch_name(1494242875117011085, "feat: test")
+        assert result.endswith("-011085")
+
+
+class TestResolveBranchName:
+    """Branch name caching via .commit-branch marker."""
+
+    def test_first_call_creates_marker(self, tmp_path):
+        from delulu_sandbox_modal.repo_provisioner import _resolve_branch_name
+
+        workspace = str(tmp_path / "ws")
+        os.makedirs(workspace)
+        branch = _resolve_branch_name(workspace, 42, "feat: add X")
+        assert branch.startswith("feat/")
+        marker = tmp_path / "ws" / ".commit-branch"
+        assert marker.exists()
+        assert marker.read_text().strip() == branch
+
+    def test_second_call_reuses_cached(self, tmp_path):
+        from delulu_sandbox_modal.repo_provisioner import _resolve_branch_name
+
+        workspace = str(tmp_path / "ws")
+        os.makedirs(workspace)
+        first = _resolve_branch_name(workspace, 42, "feat: add X")
+        second = _resolve_branch_name(workspace, 42, "fix: different message")
+        assert first == second
 
 
 class TestCommitWorkspaceChanges:
