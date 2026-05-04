@@ -2,11 +2,12 @@
 
 ## Project Overview
 
-LoRA-Instruct fine-tunes open-source causal LLMs using Low-Rank Adaptation (LoRA) via HuggingFace PEFT. It also includes an inference benchmarking tool for OpenAI-compatible endpoints.
+LoRA-Instruct fine-tunes open-source causal LLMs using Low-Rank Adaptation (LoRA) via HuggingFace PEFT. It also includes an inference benchmarking tool for OpenAI-compatible endpoints. The project now lives at `training/lora_instruct/`.
 
 ## Directory Structure
 
 ```
+training/lora_instruct/
 ├── finetune.py              # Main training entrypoint (uses python-fire CLI)
 ├── utils/
 │   ├── prompter.py          # Prompt template loading and formatting
@@ -19,13 +20,12 @@ LoRA-Instruct fine-tunes open-source causal LLMs using Low-Rank Adaptation (LoRA
 │   └── alpaca.json          # Alpaca prompt template (prompt_input / prompt_no_input)
 ├── dataset/                 # Training datasets (Alpaca variants, prompts.jsonl)
 ├── notebook/                # Jupyter notebooks for model experimentation
-├── pyproject.toml           # Poetry project config and dependencies
-└── tox.ini                  # Tox test environments (linting, formatting)
+└── pyproject.toml           # Poetry project config and dependencies
 ```
 
 ## Key Components
 
-### Fine-tuning (`finetune.py`)
+### Fine-tuning (`training/lora_instruct/finetune.py`)
 
 - **Entry point**: `fire.Fire(train)` — all training params are CLI flags.
 - **Model loading**: `AutoModelForCausalLM` with bfloat16, optional 8-bit quantization via BitsAndBytes.
@@ -35,13 +35,13 @@ LoRA-Instruct fine-tunes open-source causal LLMs using Low-Rank Adaptation (LoRA
 - **`TrainConfig` dataclass**: Structured config (currently used by `setup_model()`, but `train()` function uses flat kwargs).
 - **`TokenizerHelper`**: Handles prompt tokenization and optional input masking (`train_on_inputs=False`).
 
-### Prompt System (`utils/prompter.py`)
+### Prompt System (`training/lora_instruct/utils/prompter.py`)
 
-- `Prompter` loads JSON templates from `templates/` directory.
+- `Prompter` loads JSON templates from `training/lora_instruct/templates/` directory.
 - Templates define `prompt_input`, `prompt_no_input`, and `response_split` fields.
 - Currently only `alpaca.json` template exists.
 
-### Inference Benchmarking (`inference/bench.py`)
+### Inference Benchmarking (`training/lora_instruct/inference/bench.py`)
 
 - Async HTTP benchmarking for OpenAI-compatible chat completion endpoints.
 - Uses Poisson process for request arrival simulation.

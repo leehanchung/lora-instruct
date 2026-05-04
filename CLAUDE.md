@@ -1,13 +1,13 @@
 # CLAUDE.md
 
-LoRA-Instruct: LoRA fine-tuning for open-source causal LLMs using HuggingFace PEFT.
+SMILE-factory is a multi-project monorepo. The active project is **delulu**, a Discord → Claude Code orchestrator that dispatches tasks to ephemeral Modal sandboxes (under `apps/delulu_discord` and `apps/delulu_sandbox_modal`). It also hosts a **LoRA-Instruct** SFT training recipe (HuggingFace PEFT + LoRA) under `training/lora_instruct/`.
 
 ## Quick Reference
 
-- **Setup**: `poetry install`
-- **Lint**: `poetry run ruff check .` (fix with `--fix`)
-- **Test**: `poetry run pytest`
-- **Train**: `python finetune.py --base_model '<model>' --output_dir '<dir>'`
+Each project owns its own Makefile and tooling — there is no repo-wide `poetry`/`pytest`. Use the per-project entrypoints:
+
+- **Delulu (active)**: `make -C apps/delulu_discord check` (lint + test), `make -C apps/delulu_discord deploy`, `make -C apps/delulu_sandbox_modal modal-deploy`. Top-level shortcuts: `make check`, `make deploy-bot`, `make deploy-modal`, `make deploy-all`.
+- **LoRA-Instruct training**: see [`training/lora_instruct/CLAUDE.md`](training/lora_instruct/CLAUDE.md) for setup, lint, test, and training commands — they no longer live at the repo root.
 
 ## Docs
 
