@@ -79,21 +79,41 @@ validation, not introducing per-user identity.
   rotates the Modal Secret manually. No refresh, no expiry
   warnings.
 
-## Decisions to lock in
+## User decisions locked in
 
-These mirror the "User decisions locked in" table format from
-repo-provisioning.md but are presented as **open questions with
-recommendations** — none of these are decided yet, and the answers
-shape the implementation sketch below.
+| Question | Choice |
+|---|---|
+| One PAT or two? | **Reuse the existing `github-pat` Modal Secret** for both clone and push. One secret to rotate; matches v1's single-team scope. Operator-side PAT scope (fine-grained, allowlist-only) is the real least-privilege control, not a second secret. |
+| Validation of private repos at `/admin_addrepo` | **Delegate to the sandbox** via a `validate_repo_access` Modal function. The secret is already mounted there for `/commit`; no need to add a second mount on the bot container. ~1s round-trip fits Discord's 3s interaction-token budget. |
+| Behavior when PAT is missing at clone time | **Refuse-and-instruct,** scoped to repos tagged `private` on the allowlist. Public repos in the allowlist still work without the PAT — the message shape mirrors `/commit`'s no-PAT path. |
+| Marker on allowlist entry | **Tag `public` / `private` at add time.** Dispatch-path check is a `RepoAllowlist` lookup instead of a network round-trip; visibility surfaces in `/admin_listrepos`. |
+| `LiveStatus` subtitle when repo is private | **Prepend a 🔒** — `📁 🔒 alice/internal-service@main`. Cheap orientation cue for screen-share / audit. |
+| Token rotation | **Manual** — `modal secret create github-pat GITHUB_TOKEN=<new> --force`. Operator-only, ~once a quarter; not worth slash-command surface. |
+| Transport | **HTTPS+PAT only.** No SSH (would require baking a key into the sandbox image). |
+| Identity model | **Stay inside v1's single-team auth scope.** Do NOT introduce per-user PATs in a Modal Dict, even as a stepping stone — that warning from `repo-provisioning.md` "Out of scope" §"Multi-user identity via GitHub App" still binds. |
 
-| Question | Options | Recommendation |
-|---|---|---|
-| One PAT or two? | (a) Reuse the existing `github-pat` Modal Secret for both clone and push. (b) Introduce a second read-only secret `github-pat-readonly` for clone/fetch, keep `github-pat` for push. | **(a) Reuse `github-pat`.** Simpler; one secret to rotate; matches v1's single-team scope. The "least privilege" win from (b) is real but small — the same operator owns both secrets, so a leaked read-only PAT and a leaked read/write PAT are roughly equivalent blast radii in practice. |
-| Validation of private repos at `/admin_addrepo` | (a) Bot reads `github-pat` from a Modal Secret mounted on the bot container; runs authenticated `git ls-remote`. (b) Delegate validation to the sandbox via a small Modal function (`validate_repo_access`) that has the secret mounted. | **(b) Delegate to the sandbox.** Keeps the secret mount surface to one place (sandbox containers, where it's already mounted for `/commit`), avoids adding a `github-pat` mount on the bot container, and the validation is fast (~1s for `git ls-remote`). Slash-command latency stays under the 3s Discord interaction-token budget. |
-| Behavior when PAT is missing at clone time | (a) Fail the dispatch with a refuse-and-instruct message, same shape as `/commit` today. (b) Fall back to anonymous clone (works for public repos, fails identically for private). | **(a) Refuse-and-instruct,** but only when the bound repo was added to the allowlist as private. Public repos in the allowlist don't need the PAT and shouldn't fail just because it's missing. Marker on the allowlist entry distinguishes the two. |
-| Marker on allowlist entry | (a) Tag each entry as `public` / `private` at add time, store as `(owner_repo, visibility)` tuples in `RepoAllowlist`. (b) Don't tag; always try authenticated first, fall back to anonymous on auth failure. | **(a) Tag at add time.** Costs one extra field in the Modal Dict, makes the dispatch path's "do we need the PAT for this?" check a Dict lookup instead of a try/except on a network call, and surfaces the public/private split in `/admin_listrepos`. |
-| `LiveStatus` subtitle when repo is private | (a) Same shape as public — `📁 alice/api-service@main`. (b) Mark visibility — `📁 🔒 alice/api-service@main`. | **(b) Lock icon for private repos.** Cheap orientation cue; useful when an operator is screen-sharing or auditing. No information leak — the repo path itself is already in the subtitle. |
-| Token rotation | (a) Manual: operator runs `modal secret create github-pat GITHUB_TOKEN=<new>` to overwrite. (b) Build a `/admin_rotatepat` slash command. | **(a) Manual.** v1 PAT for `/commit` is already manual; no reason to add slash-command surface area for an operator-only action that happens once a quarter. |
+### Note on access control via Discord channels
+
+The per-channel `/setrepo` binding from v1 *is* the per-repo access
+control surface for private repos. There is no separate ACL layer —
+Discord channel permissions decide who can `@delulu` against which
+repo:
+
+- A private allowlisted repo is accessible to exactly the users who
+  can post in channels bound to it (via `/setrepo`).
+- Granting a user access to a private repo = inviting them to the
+  channel where it's bound. Revoking = removing them from the
+  channel (or `/unsetrepo`'ing the channel).
+- The `MANAGE_GUILD`-gated allowlist is the *outer* ring (which
+  repos can be bound at all in this server); per-channel binding +
+  Discord channel membership is the *inner* ring (who can dispatch
+  against which bound repo).
+
+This works because the bot's whole identity model is single-team:
+one shared PAT, one effective git identity, audit trail in Discord
+thread history. If we ever scale to multi-team or per-user
+identity (the parked GitHub App path), the channel-level access
+model still works but needs revisiting alongside the auth rewrite.
 
 ## The auth rewriting mechanism
 
