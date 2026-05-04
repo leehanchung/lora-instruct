@@ -48,8 +48,8 @@ def _render(
     - Empty transcript and no ``done_footer`` → initial
       "thinking..." placeholder. The repo subtitle is appended below
       the placeholder if a repo is bound.
-    - Latest ``thinking`` block collapses into one spoiler line at the
-      top (``||🧠 Reasoning: …||``).
+    - Latest ``thinking`` block renders as a plain-text line at the
+      top (``🧠 <preview>``). No spoiler tags — always visible.
     - If ``repo_url`` is set, an active-repo subtitle line
       (``📁 owner/repo@ref``) is rendered as the second line, right
       below the thinking/reasoning header. Omitted entirely when
@@ -142,7 +142,7 @@ def _render_header(transcript: list[dict[str, Any]]) -> str:
     preview = (
         latest[:THINKING_PREVIEW_LIMIT] + "…" if len(latest) > THINKING_PREVIEW_LIMIT else latest
     )
-    return f"||🧠 Reasoning: {preview}||"
+    return f"🧠 {preview}"
 
 
 def _render_tool_lines(transcript: list[dict[str, Any]]) -> list[str]:
