@@ -36,3 +36,6 @@ cd training/lora_instruct/
 - `dataset/` — bundled instruction datasets (alpaca, gpt4 variants).
 - `inference/` — local inference + benchmarking scripts.
 - `notebook/` — exploratory notebooks per base model.
+- `tests/` — lightweight pytest suite (prompter, template structure,
+  dataset file integrity). Heavy ML imports are out of scope —
+  these run without GPU or transformers/peft installed.
