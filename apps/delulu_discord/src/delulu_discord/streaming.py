@@ -39,6 +39,7 @@ def _render(
     done_footer: str | None = None,
     repo_url: str | None = None,
     ref: str = "HEAD",
+    is_private: bool = False,
 ) -> str:
     """Render the running transcript into Discord markdown.
 
@@ -52,8 +53,9 @@ def _render(
       top (``🧠 <preview>``). No spoiler tags — always visible.
     - If ``repo_url`` is set, an active-repo subtitle line
       (``📁 owner/repo@ref``) is rendered as the second line, right
-      below the thinking/reasoning header. Omitted entirely when
-      ``repo_url is None``.
+      below the thinking/reasoning header. When ``is_private`` is
+      True, a 🔒 prefix orients the operator at a glance. Omitted
+      entirely when ``repo_url is None``.
     - Each ``tool_use`` becomes ``🔧 <Tool> <summary>`` with a trailing
       ``✓`` / ``✗`` if a matching ``tool_result`` followed it.
     - If any assistant ``text`` event is present AND the run isn't
@@ -71,7 +73,7 @@ def _render(
       repo subtitle is **protected** — never truncated, since it's a
       single short line and dropping it would lose orientation.
     """
-    repo_line = _format_repo_line(repo_url, ref)
+    repo_line = _format_repo_line(repo_url, ref, is_private=is_private)
 
     if not transcript and done_footer is None:
         if repo_line is None:
@@ -91,7 +93,12 @@ def _render(
     return _truncate_to_limit(header, tool_lines, writing_marker, done_footer, repo_line)
 
 
-def _format_repo_line(repo_url: str | None, ref: str) -> str | None:
+def _format_repo_line(
+    repo_url: str | None,
+    ref: str,
+    *,
+    is_private: bool = False,
+) -> str | None:
     """Build the ``📁 owner/repo@ref`` subtitle line, or None if no repo.
 
     Parses ``owner/repo`` from the full URL for compact display. The
@@ -99,10 +106,19 @@ def _format_repo_line(repo_url: str | None, ref: str) -> str | None:
     sandbox-side ``repo_provisioner``) — the bot and sandbox apps
     are deliberately kept import-isolated so they can deploy
     independently.
+
+    Private repos get a 🔒 prefix between the folder icon and the
+    repo name as a cheap orientation cue (audit, screen-share). The
+    repo path itself is already in the subtitle, so the prefix
+    leaks no additional information beyond what Discord already
+    shows.
     """
     if not repo_url:
         return None
-    return f"📁 {_short_repo_name(repo_url)}@{ref}"
+    short = _short_repo_name(repo_url)
+    if is_private:
+        return f"📁 🔒 {short}@{ref}"
+    return f"📁 {short}@{ref}"
 
 
 def _short_repo_name(repo_url: str) -> str:
@@ -259,6 +275,7 @@ class LiveStatus:
         flush_interval: float = FLUSH_INTERVAL_SECONDS,
         repo_url: str | None = None,
         ref: str = "HEAD",
+        is_private: bool = False,
     ) -> None:
         self.status_msg = status_msg
         self.flush_interval = flush_interval
@@ -270,6 +287,11 @@ class LiveStatus:
         # subtitle line is omitted entirely.
         self.repo_url = repo_url
         self.ref = ref
+        # Drives the 🔒 prefix on the repo subtitle. Sourced from
+        # ``Session.is_private``, which the handler populates from
+        # the server's allowlist visibility marker. False for
+        # unbound channels and legacy (pre-marker) entries.
+        self.is_private = is_private
         self.transcript: list[dict[str, Any]] = []
         self._last_rendered: str | None = None
         self._dirty = False
@@ -304,6 +326,7 @@ class LiveStatus:
                 done_footer=footer,
                 repo_url=self.repo_url,
                 ref=self.ref,
+                is_private=self.is_private,
             )
         )
 
@@ -315,7 +338,14 @@ class LiveStatus:
         before the error, not the last rate-limited flush.
         """
         await self._stop_flush()
-        await self._safe_edit(_render(self.transcript, repo_url=self.repo_url, ref=self.ref))
+        await self._safe_edit(
+            _render(
+                self.transcript,
+                repo_url=self.repo_url,
+                ref=self.ref,
+                is_private=self.is_private,
+            )
+        )
 
     async def _flush_loop(self) -> None:
         while not self._stopped:
@@ -333,7 +363,12 @@ class LiveStatus:
                 logger.exception("streaming.flush_failed")
 
     async def _flush_once(self) -> None:
-        rendered = _render(self.transcript, repo_url=self.repo_url, ref=self.ref)
+        rendered = _render(
+            self.transcript,
+            repo_url=self.repo_url,
+            ref=self.ref,
+            is_private=self.is_private,
+        )
         if rendered == self._last_rendered:
             self._dirty = False
             return

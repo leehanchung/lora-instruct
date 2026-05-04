@@ -41,6 +41,13 @@ class SandboxDispatcher:
             settings.modal_app_name,
             "commit_workspace",
         )
+        # Handle for the /admin_addrepo validation function. Returns
+        # a {"status": ..., "error": ...} dict — see the sandbox-side
+        # ``validate_repo_access`` docstring for the status values.
+        self._validate_fn = modal.Function.from_name(
+            settings.modal_app_name,
+            "validate_repo_access",
+        )
 
     async def run_task(
         self,
@@ -50,6 +57,7 @@ class SandboxDispatcher:
         *,
         repo_url: str | None = None,
         ref: str = "HEAD",
+        is_private: bool = False,
         resume: bool = False,
         attachments: list[tuple[str, bytes]] | None = None,
         message_id: int | None = None,
@@ -80,6 +88,7 @@ class SandboxDispatcher:
             thread_id=thread_id,
             repo_url=repo_url,
             ref=ref,
+            is_private=is_private,
             resume=resume,
             attachment_count=len(attachments) if attachments else 0,
         )
@@ -91,6 +100,7 @@ class SandboxDispatcher:
             thread_id=thread_id,
             repo_url=repo_url,
             ref=ref,
+            is_private=is_private,
             resume=resume,
             attachments=attachments or [],
             message_id=message_id,
@@ -103,6 +113,27 @@ class SandboxDispatcher:
             session_id=session_id,
             event_count=event_count,
         )
+
+    async def validate_repo_access(self, repo_url: str) -> dict[str, Any]:
+        """Probe a repo's accessibility via the sandbox's git ls-remote.
+
+        Returns a dict shaped like
+        ``{"status": "public" | "private" | "not_found" | "error",
+           "error": str | None}``. See the sandbox-side
+        ``validate_repo_access`` Modal function for full semantics.
+
+        Used by ``/admin_addrepo`` to classify a repo at allowlist
+        add-time so the visibility marker can be persisted alongside
+        the entry.
+        """
+        logger.info("validate.dispatch", repo_url=repo_url)
+        result: dict[str, Any] = await self._validate_fn.remote.aio(repo_url=repo_url)
+        logger.info(
+            "validate.complete",
+            repo_url=repo_url,
+            status=result.get("status"),
+        )
+        return result
 
     async def commit_workspace(
         self,

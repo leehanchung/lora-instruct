@@ -39,8 +39,11 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
+import tempfile
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -69,6 +72,8 @@ def provision_workspace(
     thread_id: int,
     repo_url: str | None,
     ref: str = "HEAD",
+    *,
+    github_token: str | None = None,
 ) -> tuple[str, ProvisionTiming]:
     """Ensure a workspace exists at ``/vol/workspaces/<thread_id>`` and return its path.
 
@@ -76,6 +81,14 @@ def provision_workspace(
     ``app.py``, which has ``max_containers=1`` and serializes all
     invocations at the Modal orchestration layer. No lock code is
     needed here because there's only ever one caller active at a time.
+
+    ``github_token`` (when non-empty) is used to authenticate the
+    clone and fetch via ``GIT_ASKPASS``. Public-repo callers pass
+    ``None`` (or omit the kwarg) and the git operations run
+    unauthenticated. Private-repo callers must pass a real PAT —
+    refuse-and-instruct on missing PAT happens earlier (in
+    ``app.run_claude_code``) so we don't reach this function with
+    a known-private repo and an empty token.
 
     Behavior:
 
@@ -108,12 +121,12 @@ def provision_workspace(
     cold_clone = not os.path.isdir(bare_path)
     if cold_clone:
         clone_start = time.monotonic()
-        _clone_bare(repo_url, bare_path)
+        _clone_bare(repo_url, bare_path, github_token=github_token)
         timings.cold_clone_ms = _elapsed_ms(clone_start)
     else:
         # Warm cache — fetch the ref to pick up upstream changes.
         fetch_start = time.monotonic()
-        _fetch_bare(bare_path, ref)
+        _fetch_bare(bare_path, ref, github_token=github_token)
         timings.fetch_ms = _elapsed_ms(fetch_start)
 
     # Create (or replace) the per-thread worktree.
@@ -192,12 +205,17 @@ def _parse_repo_url(repo_url: str) -> tuple[str, str, str]:
     return host, parts[0], parts[1]
 
 
-def _clone_bare(repo_url: str, bare_path: str) -> None:
+def _clone_bare(repo_url: str, bare_path: str, *, github_token: str | None = None) -> None:
     """``git clone --bare --filter=blob:none <repo_url> <bare_path>``.
 
     Creates parent directories if missing. Partial clone keeps the
     bare cache small on cold start — file-content blobs are fetched
     on demand when files are actually opened.
+
+    When ``github_token`` is set, runs the clone under
+    ``GIT_ASKPASS`` so private repos resolve. The token is never
+    embedded in the URL or written into ``.git/config`` — see
+    ``_askpass_env``.
     """
     os.makedirs(os.path.dirname(bare_path), exist_ok=True)
     _run_git(
@@ -207,16 +225,21 @@ def _clone_bare(repo_url: str, bare_path: str) -> None:
             "--filter=blob:none",
             repo_url,
             bare_path,
-        ]
+        ],
+        github_token=github_token,
     )
 
 
-def _fetch_bare(bare_path: str, ref: str) -> None:
+def _fetch_bare(bare_path: str, ref: str, *, github_token: str | None = None) -> None:
     """``git -C <bare_path> fetch --filter=blob:none origin <ref>``.
 
     Fetches metadata for the requested ref so ``git worktree add``
     can materialize it. Partial clone keeps this cheap on warm
     caches — usually well under a second.
+
+    When ``github_token`` is set, runs the fetch under
+    ``GIT_ASKPASS`` so private-repo refresh works. See
+    ``_askpass_env`` for the auth mechanism.
     """
     _run_git(
         [
@@ -226,7 +249,8 @@ def _fetch_bare(bare_path: str, ref: str) -> None:
             "--filter=blob:none",
             "origin",
             ref,
-        ]
+        ],
+        github_token=github_token,
     )
 
 
@@ -296,35 +320,203 @@ def _write_marker(workspace_path: str, repo_url: str, ref: str) -> None:
         json.dump({"repo_url": repo_url, "ref": ref}, f)
 
 
-def _run_git(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _run_git(
+    args: list[str],
+    *,
+    check: bool = True,
+    github_token: str | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Wrapper around ``subprocess.run`` for git commands.
 
     Captures stderr so callers (and the `provision.timing` logs)
     surface actionable error context on failure. Uses ``text=True``
     so git output is decoded as UTF-8 strings rather than bytes.
+
+    When ``github_token`` is non-empty, the subprocess runs under
+    ``GIT_ASKPASS`` (via ``_askpass_env``) so authenticated git
+    operations can proceed without an interactive credential prompt.
+    On error any occurrence of the token in stderr/stdout is
+    scrubbed before being raised.
     """
+    with _askpass_env(github_token) as env:
+        try:
+            return subprocess.run(
+                ["git", *args],
+                check=check,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+        except subprocess.CalledProcessError as exc:
+            # Re-raise with stderr attached to the message — the default
+            # CalledProcessError __str__ drops stderr, and debugging a
+            # silent git failure against a Modal Volume is painful
+            # without it. Scrub the token first so we don't leak it
+            # into logs or error rendering.
+            stderr = _scrub_pat((exc.stderr or "").strip(), github_token or "")
+            stdout = _scrub_pat((exc.stdout or "").strip(), github_token or "")
+            raise RuntimeError(
+                f"git {' '.join(args)} failed with exit code {exc.returncode}: "
+                f"stderr={stderr!r} stdout={stdout!r}"
+            ) from exc
+
+
+@contextmanager
+def _askpass_env(github_token: str | None):
+    """Yield an env dict with ``GIT_ASKPASS`` configured for ``github_token``.
+
+    When the token is empty/None, yields ``None`` so subprocess.run
+    inherits the parent's env unchanged — the unauthenticated path
+    stays free of any extra setup cost.
+
+    When the token is set, writes a tiny temp shell script to
+    ``/tmp`` that responds with ``git`` for the username prompt and
+    the token for the password prompt, sets ``GIT_ASKPASS`` to point
+    at it, and ``GIT_TERMINAL_PROMPT=0`` to refuse interactive
+    fallback. The script is deleted on context exit so the token
+    doesn't outlive the operation on disk.
+
+    This mirrors the auth pattern in ``_push_with_askpass`` (used by
+    /commit), which landed on GIT_ASKPASS after http.extraheader and
+    URL-embedded credentials proved unreliable for ``git push``. For
+    clone/fetch/ls-remote the choice is consistency with what works:
+    one auth mechanism across the codebase, no per-operation
+    decision-making about which auth flavor to use.
+    """
+    if not github_token:
+        yield None
+        return
+
+    # Single-quoted echo prevents shell expansion of the PAT.
+    # GitHub PATs are alphanumeric + underscores, so no metachar
+    # risk, but quoting is good hygiene for credential scripts.
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".sh",
+        delete=False,
+        dir="/tmp",
+        prefix="git-askpass-",
+    ) as f:
+        f.write("#!/bin/sh\n")
+        f.write('case "$1" in\n')
+        f.write("  Username*) echo 'git' ;;\n")
+        f.write(f"  Password*) echo '{github_token}' ;;\n")
+        f.write("esac\n")
+        askpass_path = f.name
+    os.chmod(askpass_path, stat.S_IRWXU)
+
     try:
-        return subprocess.run(
-            ["git", *args],
-            check=check,
-            capture_output=True,
-            text=True,
-        )
-    except subprocess.CalledProcessError as exc:
-        # Re-raise with stderr attached to the message — the default
-        # CalledProcessError __str__ drops stderr, and debugging a
-        # silent git failure against a Modal Volume is painful
-        # without it.
-        stderr = (exc.stderr or "").strip()
-        stdout = (exc.stdout or "").strip()
-        raise RuntimeError(
-            f"git {' '.join(args)} failed with exit code {exc.returncode}: "
-            f"stderr={stderr!r} stdout={stdout!r}"
-        ) from exc
+        yield {
+            **os.environ,
+            "GIT_ASKPASS": askpass_path,
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    finally:
+        try:
+            os.unlink(askpass_path)
+        except OSError:
+            pass
 
 
 def _elapsed_ms(start: float) -> int:
     return int((time.monotonic() - start) * 1000)
+
+
+# ─────────────────────────────────────────────────────────────────
+# Repo-access validation (used by /admin_addrepo)
+# ─────────────────────────────────────────────────────────────────
+
+# Possible classifications returned by ``validate_repo_access``.
+# Treated as opaque strings on the bot side so the admin command
+# can render the right user-facing message per case.
+ACCESS_PUBLIC = "public"
+ACCESS_PRIVATE = "private"
+ACCESS_NOT_FOUND = "not_found"
+ACCESS_ERROR = "error"
+
+
+@dataclass
+class RepoAccessResult:
+    """Outcome of a ``validate_repo_access`` probe.
+
+    ``status`` is one of the ``ACCESS_*`` constants. ``error`` carries
+    the underlying message when ``status == ACCESS_ERROR`` (network
+    failures, malformed URLs, etc.) so the bot can surface something
+    actionable rather than a generic "validation failed."
+    """
+
+    status: str
+    error: str | None = None
+
+
+def validate_repo_access(
+    repo_url: str,
+    *,
+    github_token: str | None = None,
+) -> RepoAccessResult:
+    """Classify a GitHub repo as public / private / not_found via ``git ls-remote``.
+
+    Runs ``git ls-remote`` first anonymously, then (if the anonymous
+    probe failed AND a token is provided) authenticated. The pair of
+    outcomes drives the classification:
+
+    - anonymous succeeds → ``public``
+    - anonymous fails, authenticated succeeds → ``private``
+    - both fail → ``not_found``  (could be private without PAT
+      access, deleted, or never existed — GitHub deliberately
+      doesn't distinguish)
+
+    ``error`` is reserved for *infrastructural* failures (URL won't
+    parse, git binary missing, etc.) — anything where we can't even
+    make the network request. A 404-equivalent from GitHub is
+    ``not_found``, not ``error``.
+
+    Used by the bot's ``/admin_addrepo`` slash command via
+    ``validate_repo_access.remote()`` (defined in ``app.py``).
+    """
+    try:
+        _parse_repo_url(repo_url)
+    except ValueError as exc:
+        return RepoAccessResult(status=ACCESS_ERROR, error=str(exc))
+
+    # Anonymous probe first — public repos respond immediately and
+    # we can skip the authenticated round-trip entirely.
+    if _ls_remote_succeeds(repo_url, github_token=None):
+        return RepoAccessResult(status=ACCESS_PUBLIC)
+
+    # Anonymous failed. If we have a token, try authenticated.
+    if github_token and _ls_remote_succeeds(repo_url, github_token=github_token):
+        return RepoAccessResult(status=ACCESS_PRIVATE)
+
+    # Both failed (or no token to try). Treat as not_found — we can't
+    # distinguish "doesn't exist" from "private but our PAT can't see it"
+    # from the response, so the user-facing message bundles both.
+    return RepoAccessResult(status=ACCESS_NOT_FOUND)
+
+
+def _ls_remote_succeeds(repo_url: str, *, github_token: str | None) -> bool:
+    """``git ls-remote <repo_url> HEAD``, returning True on exit 0.
+
+    Uses ``ls-remote`` with the ``HEAD`` ref so we transfer no refs
+    beyond what's needed to confirm access — a few hundred bytes
+    even on huge repos. Fails closed on any nonzero exit.
+    """
+    with _askpass_env(github_token) as env:
+        try:
+            proc = subprocess.run(
+                ["git", "ls-remote", "--exit-code", repo_url, "HEAD"],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=15,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+    return proc.returncode == 0
+
+
+# ``_scrub_pat`` is defined below in the /commit-back section.
+# Both code paths call into it from distinct error-handling sites.
 
 
 def _resolve_branch_name(workspace_path: str, thread_id: int, message: str) -> str:
