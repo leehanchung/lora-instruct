@@ -77,17 +77,22 @@ apps/              # production services
     sandbox_modal/     ← apps/delulu_sandbox_modal
   <future-app>/
 
-projects/          # research/training projects — each self-contained
+training/          # reusable training/SFT/RLHF recipes — each self-contained
   lora_instruct/
-    training/        ← finetune.py + utils/
-    data/            ← dataset/ + templates/
-    inference/       ← inference/
-    notebooks/       ← notebook/
-    evals/             # project-specific benchmarks
-    pyproject.toml     # project-owned deps
+    finetune.py
+    utils/
+    templates/
+    dataset/
+    inference/
+    notebook/
+    evals/             # recipe-specific benchmarks
+    pyproject.toml     # recipe-owned deps
     CLAUDE.md
     README.md
-  <future-project>/
+  <future-recipe>/
+
+projects/          # research projects that produce experiment-shaped artifacts
+  <future-project>/    # models, datasets, reports — investigations, not harnesses
 
 data/              # cross-project datasets + scrapers only
   scrapers/          ← scripts/job_postings (if general-purpose)
@@ -108,12 +113,16 @@ libs/              # cross-project Python packages — empty slot, ready
 docs/ prd/ .github/ CLAUDE.md README.md ARCHITECTURE.md
 ```
 
-### Rule of thumb: `apps/` vs `projects/`
+### Rule of thumb: `apps/` vs `training/` vs `projects/`
 
 - **`apps/`** = runs as a production service with users hitting it.
   Deployables.
-- **`projects/`** = research/training work that produces *artifacts*
-  (models, datasets, reports). Not services.
+- **`training/`** = reusable training/SFT/RLHF recipes —
+  parameterized harnesses you *run*, not experiments you *investigate*.
+  Each recipe is self-contained with its own deps and entrypoints.
+- **`projects/`** = research projects that produce experiment-shaped
+  *artifacts* (models, datasets, reports). Investigations with a
+  beginning and an end, not services and not reusable harnesses.
 
 ## Agent working rules
 
@@ -139,8 +148,8 @@ know the target shape. Key rules:
 |---|---|---|---|
 | Q1 | What is `infra/managed-agents/`? App, infra, or project? | Wave 5 | stays in `infra/` |
 | Q2 | Is `scripts/job_postings` LoRA-owned or general? | Wave 4 | folded into Wave 3 as LoRA data |
-| Q3 | Is LoRA-Instruct active or archived? | Wave 3 | active → `projects/lora_instruct/` |
-| Q4 | Does LoRA get its own `pyproject.toml`? | Wave 3 | yes (matches `apps/` pattern) |
+| Q3 | Is LoRA-Instruct active or archived? | Wave 3 | ✅ answered: active → `training/lora_instruct/` |
+| Q4 | Does LoRA get its own `pyproject.toml`? | Wave 3 | ✅ answered: yes (matches `apps/` pattern) |
 | Q5 | Regroup `apps/delulu_*` into `apps/delulu/{discord,sandbox_modal}/`? | Wave 6 | yes (scales better; can skip) |
 
 ## Wave-by-wave plan
@@ -183,32 +192,36 @@ All safe, all reversible, no path dependencies. Two PRs:
 Lands before structural moves so the agent rules are authoritative
 during the migration window.
 
-### Wave 3 — LoRA-Instruct into `projects/`
+### Wave 3 — LoRA-Instruct into `training/`
 
-**Blocked on Q3, Q4.** Assuming active + own pyproject:
+**Status: shipped in PR <number-tbd>.** Destination changed from the
+original plan (`projects/lora_instruct/`) to `training/lora_instruct/`
+because LoRA-Instruct is a reusable training recipe, not a research
+project. Q3 answered ✅ active; Q4 answered ✅ own pyproject. Body
+preserved below for historical record.
 
-- **PR** — `refactor: move LoRA-Instruct under projects/lora_instruct`
-  - `git mv finetune.py projects/lora_instruct/training/finetune.py`
-  - `git mv utils/ projects/lora_instruct/training/utils/`
-  - `git mv templates/ projects/lora_instruct/data/templates/`
-  - `git mv dataset/ projects/lora_instruct/data/datasets/`
-  - `git mv inference/ projects/lora_instruct/inference/`
-  - `git mv notebook/ projects/lora_instruct/notebooks/`
+- **PR** — `refactor: move LoRA-Instruct under training/lora_instruct`
+  - `git mv finetune.py training/lora_instruct/finetune.py`
+  - `git mv utils/ training/lora_instruct/utils/`
+  - `git mv templates/ training/lora_instruct/templates/`
+  - `git mv dataset/ training/lora_instruct/dataset/`
+  - `git mv inference/ training/lora_instruct/inference/`
+  - `git mv notebook/ training/lora_instruct/notebook/`
   - Move root `pyproject.toml` + `poetry.lock` →
-    `projects/lora_instruct/`.
-  - Add `projects/lora_instruct/CLAUDE.md` (project-scoped Quick
+    `training/lora_instruct/`.
+  - Add `training/lora_instruct/CLAUDE.md` (recipe-scoped Quick
     Reference).
-  - Add `projects/lora_instruct/README.md` (split from root README's
+  - Add `training/lora_instruct/README.md` (split from root README's
     LoRA section).
   - Update imports: `from utils.X` → rooted in the new package layout.
-    Simplest approach: make `projects/lora_instruct/` the package root
-    with `src/lora_instruct/` inside, or declare `training/` as a
+    Simplest approach: make `training/lora_instruct/` the package root
+    with `src/lora_instruct/` inside, or declare the recipe as a
     package in `pyproject.toml`.
   - Update `.pre-commit-config.yaml` if it references any moved paths.
   - Delete any LoRA-related targets from the root `Makefile`.
-  - **Verification:** from `projects/lora_instruct/`, `poetry install`
-    + `poetry run ruff check .` pass. `python training/finetune.py
-    --help` prints.
+  - **Verification:** from `training/lora_instruct/`, `poetry install`
+    + `poetry run ruff check .` pass. `python finetune.py --help`
+    prints.
 
 *High file-count, low runtime risk — LoRA isn't deployed from this
 repo.*
@@ -259,8 +272,11 @@ driven by path filters.
   - Update the droplet deploy path in README / workflow
     (`/root/SMILE-factory/apps/delulu_discord` →
     `/root/SMILE-factory/apps/delulu/discord`).
-  - Update `prd/streaming.md` and `prd/repo-provisioning.md` path
-    references.
+  - Update `prd/repo-provisioning.md` path references.
+  - Per-app PRDs under `apps/<app>/prd/` (e.g.
+    `apps/delulu_discord/prd/`, `apps/delulu_sandbox_modal/prd/`)
+    move with their app during the regrouping —
+    `apps/delulu/discord/prd/`, `apps/delulu/sandbox_modal/prd/`.
   - Update `.pre-commit-config.yaml` if it has `apps/delulu_*` globs.
   - Update the top-level dispatching `Makefile`.
 
@@ -282,16 +298,16 @@ driven by path filters.
 
 ## Summary table
 
-| Wave | PRs | Blocked on | Operational risk |
-|---|---|---|---|
-| 0 | #20, #21 merge | — | none |
-| 1 | 2 | — | none |
-| 2 | 1 | — | none |
-| 3 | 1 | Q3, Q4 | none |
-| 4 | 1 | Q2 | none |
-| 5 | 1 | Q1 | low–medium |
-| 6 | 1 | Q5 (optional) | medium (deploys) |
-| 7 | 1 | waves 3–6 done | none |
+| Wave | PRs | Blocked on | Operational risk | Status |
+|---|---|---|---|---|
+| 0 | #20, #21 merge | — | none | ✅ |
+| 1 | 2 | — | none | |
+| 2 | 1 | — | none | |
+| 3 | 1 | — | none | ✅ |
+| 4 | 1 | Q2 | none | |
+| 5 | 1 | Q1 | low–medium | |
+| 6 | 1 | Q5 (optional) | medium (deploys) | |
+| 7 | 1 | waves 3–6 done | none | |
 
 **Total: ~8 PRs** once Q1–Q5 are answered. Waves 1 and 2 can start
 immediately — they don't depend on any open question.
@@ -311,10 +327,10 @@ immediately — they don't depend on any open question.
   Mitigation: do it as a package-root move (one `pyproject.toml`
   change, one `__init__.py` if missing), not a sweeping import
   rewrite.
-- **Stranded references in PRDs and docs.** `prd/streaming.md`,
-  `prd/repo-provisioning.md`, `ARCHITECTURE.md`, and `README.md` all
-  reference `apps/delulu_discord` paths. Each affected wave's PR must
-  grep for and update these references in the same commit.
+- **Stranded references in PRDs and docs.** `prd/repo-provisioning.md`,
+  `ARCHITECTURE.md`, and `README.md` all reference `apps/delulu_discord`
+  paths. Each affected wave's PR must grep for and update these
+  references in the same commit.
 - **`.pre-commit-config.yaml` path patterns.** Must update in lockstep
   with any move that changes which directories `ruff` runs against.
   Mitigation: run `pre-commit run --all-files` on each reorg PR.
