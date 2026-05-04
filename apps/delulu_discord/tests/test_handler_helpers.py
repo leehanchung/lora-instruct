@@ -18,15 +18,11 @@ def test_short_repo_from_url_https():
 
 
 def test_short_repo_from_url_https_trailing_git():
-    assert (
-        _short_repo_from_url("https://github.com/alice/api-service.git") == "alice/api-service"
-    )
+    assert _short_repo_from_url("https://github.com/alice/api-service.git") == "alice/api-service"
 
 
 def test_short_repo_from_url_ssh():
-    assert (
-        _short_repo_from_url("git@github.com:alice/api-service.git") == "alice/api-service"
-    )
+    assert _short_repo_from_url("git@github.com:alice/api-service.git") == "alice/api-service"
 
 
 def test_short_repo_from_url_unparseable_returns_none():

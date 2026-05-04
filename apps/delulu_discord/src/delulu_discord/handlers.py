@@ -68,9 +68,7 @@ class MessageHandler:
             # auth error rather than an opaque crash.
             owner_repo = _short_repo_from_url(repo_url)
             if message.guild is not None and owner_repo is not None:
-                visibility = await self.repo_allowlist.get_visibility(
-                    message.guild.id, owner_repo
-                )
+                visibility = await self.repo_allowlist.get_visibility(message.guild.id, owner_repo)
                 is_private = visibility == VISIBILITY_PRIVATE
             else:
                 is_private = False

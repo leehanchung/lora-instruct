@@ -218,8 +218,7 @@ def register_slash_commands(
         except Exception as exc:
             logger.exception("admin_addrepo.validate_failed", repo=repo)
             await interaction.followup.send(
-                f"⚠️ Couldn't reach the sandbox to validate `{repo}`: "
-                f"`{type(exc).__name__}: {exc}`",
+                f"⚠️ Couldn't reach the sandbox to validate `{repo}`: `{type(exc).__name__}: {exc}`",
                 ephemeral=True,
             )
             return
