@@ -27,27 +27,18 @@ repos:
         args:
         - --py3-plus
         - --keep-runtime-typing
--   repo: https://github.com/charliermarsh/ruff-pre-commit
-    rev: v0.0.275
-    hooks:
-    -   id: ruff
-        args:
-        - --fix
-        exclude: ^apps/
-# Modern ruff scoped to apps/ only. Keeps the rest of the monorepo on the
-# legacy hook above, while the delulu sub-projects use current ruff rules +
-# format. Version should match the one in each sub-project's
+# Modern ruff scoped to apps/ and training/. Each sub-project's
+# pyproject.toml supplies its own ruff config via per-file-style
+# discovery. Version should match the one pinned in each sub-project's
 # pyproject.toml dev extras.
 -   repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.10
     hooks:
     -   id: ruff
-        name: ruff (delulu)
-        files: ^apps/.*\.py$
+        files: ^(apps|training)/.*\.py$
         args: [--fix]
     -   id: ruff-format
-        name: ruff-format (delulu)
-        files: ^apps/.*\.py$
+        files: ^(apps|training)/.*\.py$
 ci:
     autofix_commit_msg: 🎨 [pre-commit.ci] Auto format from pre-commit.com hooks
     autoupdate_commit_msg: ⬆ [pre-commit.ci] pre-commit autoupdate

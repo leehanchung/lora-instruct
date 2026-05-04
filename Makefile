@@ -1,10 +1,11 @@
-.PHONY: help check deploy-bot deploy-modal deploy-all
+.PHONY: help check lora-check deploy-bot deploy-modal deploy-all
 
 APPS := apps/delulu_discord apps/delulu_sandbox_modal
 
 help:
 	@echo "Top-level targets:"
 	@echo "  make check         run ruff on all apps/"
+	@echo "  make lora-check    run ruff on training/lora_instruct"
 	@echo "  make deploy-bot    deploy the Discord bot to the VPS"
 	@echo "  make deploy-modal  deploy the Modal sandbox app"
 	@echo "  make deploy-all    modal-deploy then bot-deploy"
@@ -16,6 +17,9 @@ help:
 check:
 	$(MAKE) -C apps/delulu_discord check
 	$(MAKE) -C apps/delulu_sandbox_modal check
+
+lora-check:
+	cd training/lora_instruct && poetry run ruff check .
 
 deploy-bot:
 	$(MAKE) -C apps/delulu_discord deploy

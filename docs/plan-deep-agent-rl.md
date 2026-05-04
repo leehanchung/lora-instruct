@@ -21,10 +21,10 @@ The goal is to evolve this repository from a LoRA fine-tuning toolkit into a ful
 
 | Component | Status | Reusable? |
 |---|---|---|
-| LoRA fine-tuning (`finetune.py`) | Working | Yes — reference for SFT, eventually replaced |
-| Prompt system (`utils/prompter.py`) | Working | Yes — extend for chat/agent templates |
-| Inference benchmarking (`inference/bench.py`) | Working | Partially — latency metrics, not agent eval |
-| Alpaca datasets (`dataset/`) | Working | Yes — seed SFT data |
+| LoRA fine-tuning (`training/lora_instruct/finetune.py`) | Working | Yes — reference for SFT, eventually replaced |
+| Prompt system (`training/lora_instruct/utils/prompter.py`) | Working | Yes — extend for chat/agent templates |
+| Inference benchmarking (`training/lora_instruct/inference/bench.py`) | Working | Partially — latency metrics, not agent eval |
+| Alpaca datasets (`training/lora_instruct/dataset/`) | Working | Yes — seed SFT data |
 | DDP support | Working | Archive — Tinker/prime-rl handle distribution |
 | Notebooks | Working | Archive or adapt |
 | RL / reward modeling / agent evaluation | **Missing** | N/A |

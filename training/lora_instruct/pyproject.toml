@@ -3,9 +3,9 @@ name = "lora-instruct"
 version = "0.1.0"
 description = ""
 authors = ["Han Lee <lee.hanchung@gmail.com>"]
-license = "LICENSE"
+license = "Apache-2.0"
 readme = "README.md"
-packages = [{include = "lora_instruct"}]
+packages = [{include = "utils"}]
 
 [tool.poetry.dependencies]
 python = "^3.10"
@@ -29,9 +29,9 @@ num2words = "^0.5.13"
 ipykernel = "^6.22.0"
 ipywidgets = "^8.0.6"
 pytest = "^7.3.1"
-ruff = "^0.0.292"
+ruff = "^0.6.0"
 
-[tool.ruff]
+[tool.ruff.lint]
 select = [
     "E",  # pycodestyle errors
     "W",  # pycodestyle warnings

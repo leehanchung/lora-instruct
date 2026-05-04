@@ -26,14 +26,16 @@ Note: test coverage is configured in `tox.ini` but currently commented out.
 ## Training
 
 ```bash
+cd training/lora_instruct
 python finetune.py --base_model 'togethercomputer/RedPajama-INCITE-Base-7B-v0.1' --output_dir './lora-redpajama'
 ```
 
-All training hyperparameters are CLI flags — see `train()` function signature in `finetune.py` for the full list.
+All training hyperparameters are CLI flags — see `train()` function signature in `training/lora_instruct/finetune.py` for the full list.
 
 ### Distributed Training
 
 ```bash
+cd training/lora_instruct
 export WORLD_SIZE=2
 export CUDA_VISIBLE_DEVICES=0,1
 torchrun --nproc_per_node=2 --master_port=1234 finetune.py \
@@ -44,7 +46,7 @@ torchrun --nproc_per_node=2 --master_port=1234 finetune.py \
 ## Inference Benchmarking
 
 ```bash
-cd inference
+cd training/lora_instruct/inference
 python bench.py --api-url https://api.openai.com/v1/chat/completions --model gpt-3.5-turbo
 ```
 

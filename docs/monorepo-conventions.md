@@ -24,8 +24,15 @@ SMILE-factory/
 │       ├── Makefile
 │       ├── src/
 │       └── tests/
-├── finetune.py                ← Python project #3 (archived LoRA code)
-├── pyproject.toml              (root — for LoRA, NOT a workspace root)
+├── training/
+│   └── lora_instruct/         ← Python project #3 (LoRA code)
+│       ├── pyproject.toml     ← own deps, own ruff rules, own .venv
+│       ├── poetry.lock
+│       ├── finetune.py
+│       ├── utils/, templates/, dataset/, inference/, notebook/
+│       ├── CLAUDE.md
+│       └── README.md
+├── pyproject.toml              (root — kept for legacy tooling, NOT a workspace root)
 ├── docs/                       cross-project docs (this file lives here)
 ├── prd/                        plan docs for work-in-flight
 ├── .pre-commit-config.yaml
