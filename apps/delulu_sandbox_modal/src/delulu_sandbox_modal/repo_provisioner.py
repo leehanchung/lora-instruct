@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -326,6 +327,63 @@ def _elapsed_ms(start: float) -> int:
     return int((time.monotonic() - start) * 1000)
 
 
+def _resolve_branch_name(workspace_path: str, thread_id: int, message: str) -> str:
+    """Return the branch name for this thread, creating or reusing as needed.
+
+    First /commit: derives a conventional-commit-style branch name
+    from the commit message and caches it in ``.commit-branch`` on
+    the workspace. Subsequent /commits reuse the cached name so the
+    branch is stable even if the message changes.
+
+    Examples:
+        ``feat: add rate limiting`` → ``feat/add-rate-limiting-494242``
+        ``fix(auth): resolve timeout`` → ``fix/resolve-timeout-494242``
+        ``just update the readme`` → ``claude/update-the-readme-494242``
+    """
+    marker_path = os.path.join(workspace_path, COMMIT_BRANCH_MARKER)
+    if os.path.isfile(marker_path):
+        try:
+            with open(marker_path) as f:
+                cached = f.read().strip()
+            if cached:
+                return cached
+        except OSError:
+            pass
+
+    branch = _make_branch_name(thread_id, message)
+    with open(marker_path, "w") as f:
+        f.write(branch)
+    return branch
+
+
+def _make_branch_name(thread_id: int, message: str) -> str:
+    """Build a branch name like ``feat/add-rate-limiting-494242``.
+
+    Parses the commit message for a conventional-commit type prefix
+    (``feat:``, ``fix:``, etc.). If found, uses that as the branch
+    prefix. Otherwise falls back to ``claude/``. The subject is
+    slugified (lowercased, non-alphanum replaced with dashes,
+    trimmed to 50 chars). A short suffix from the thread_id ensures
+    uniqueness across threads with similar messages.
+    """
+    # Parse "type: subject" or "type(scope): subject"
+    match = re.match(
+        r"^(" + "|".join(CONVENTIONAL_TYPES) + r")(?:\([^)]*\))?:\s*(.+)",
+        message,
+        re.IGNORECASE,
+    )
+    if match:
+        type_prefix = match.group(1).lower()
+        subject = match.group(2)
+    else:
+        type_prefix = COMMIT_BRANCH_DEFAULT_PREFIX
+        subject = message
+
+    slug = re.sub(r"[^a-z0-9]+", "-", subject.lower()).strip("-")[:50]
+    short_id = str(thread_id)[-6:]
+    return f"{type_prefix}/{slug}-{short_id}"
+
+
 # ─────────────────────────────────────────────────────────────────
 # Commit-back: stage, commit, and push pending changes from a
 # per-thread workspace to a `claude/<thread_id>` branch on the
@@ -344,12 +402,22 @@ def _elapsed_ms(start: float) -> int:
 # token as a parameter so the function is testable without env
 # munging and the auth check stays at the boundary.
 
-# The branch name we always commit to. One branch per thread, so a
-# user can iterate on the same conceptual "task" across multiple
-# /commit calls and have them stack on the same branch — and the
-# remote PR (if they open one) shows the full history of the
-# thread's changes.
-COMMIT_BRANCH_PREFIX = "claude/"
+# Default branch prefix when the commit message doesn't have a
+# conventional-commit type prefix. If the message starts with
+# "feat:", "fix:", etc., the branch uses that type as the prefix
+# instead. One branch per thread — multiple /commit calls stack
+# on the same branch.
+COMMIT_BRANCH_DEFAULT_PREFIX = "claude"
+
+# Marker file written to the workspace after the first /commit to
+# lock the branch name. Subsequent /commits reuse it so the branch
+# name is stable even if the commit message changes.
+COMMIT_BRANCH_MARKER = ".commit-branch"
+
+# Conventional commit types we recognize for branch naming.
+CONVENTIONAL_TYPES = frozenset(
+    {"feat", "fix", "docs", "refactor", "test", "chore", "ci", "build", "perf", "style"}
+)
 
 # The git author identity for bot-made commits. The ACTUAL pusher
 # (visible in GitHub's UI as "pushed by") is whoever owns the PAT
@@ -425,39 +493,50 @@ def commit_workspace_changes(
     status_result = _run_git(
         ["-C", workspace_path, "status", "--porcelain"],
     )
-    if not status_result.stdout.strip():
-        return CommitResult(status="no_changes")
+    has_uncommitted = bool(status_result.stdout.strip())
 
-    branch = f"{COMMIT_BRANCH_PREFIX}{thread_id}"
+    branch = _resolve_branch_name(workspace_path, thread_id, message)
 
-    # Check out the thread's branch. ``-B`` creates if missing OR
-    # resets to the current HEAD if existing — but we want to PRESERVE
-    # any prior commits on this branch from earlier /commit calls.
-    # So: try `git checkout` first; if that fails (branch doesn't
-    # exist), `git checkout -b` to create.
-    try:
+    if has_uncommitted:
+        # Check out the thread's branch. Try switching first; if
+        # the branch doesn't exist yet, create it.
+        try:
+            _run_git(["-C", workspace_path, "checkout", branch])
+        except RuntimeError:
+            _run_git(["-C", workspace_path, "checkout", "-b", branch])
+
+        # Stage everything and commit with the bot's git identity.
+        # ``-c user.name=...`` is per-command, not persisted to config.
+        _run_git(["-C", workspace_path, "add", "-A"])
+        _run_git(
+            [
+                "-c",
+                f"user.name={author_name}",
+                "-c",
+                f"user.email={author_email}",
+                "-C",
+                workspace_path,
+                "commit",
+                "-m",
+                message,
+            ]
+        )
+    else:
+        # No uncommitted changes. But there might be previously
+        # committed-but-unpushed changes from a prior /commit
+        # attempt that failed at the push step. Check if the
+        # branch exists locally — if it does, fall through to
+        # the push step which will push the existing commits.
+        branch_check = _run_git(
+            ["-C", workspace_path, "rev-parse", "--verify", branch],
+            check=False,
+        )
+        if branch_check.returncode != 0:
+            return CommitResult(status="no_changes")
+        # Branch exists — make sure we're on it for the push.
         _run_git(["-C", workspace_path, "checkout", branch])
-    except RuntimeError:
-        _run_git(["-C", workspace_path, "checkout", "-b", branch])
 
-    # Stage everything and commit with the bot's git identity.
-    # ``-c user.name=...`` is per-command, not persisted to config.
-    _run_git(["-C", workspace_path, "add", "-A"])
-    _run_git(
-        [
-            "-c",
-            f"user.name={author_name}",
-            "-c",
-            f"user.email={author_email}",
-            "-C",
-            workspace_path,
-            "commit",
-            "-m",
-            message,
-        ]
-    )
-
-    # Capture the new commit SHA for the response.
+    # Capture the current HEAD SHA (new commit or existing unpushed).
     sha_result = _run_git(["-C", workspace_path, "rev-parse", "HEAD"])
     commit_sha = sha_result.stdout.strip()
 
