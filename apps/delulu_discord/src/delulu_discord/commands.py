@@ -8,8 +8,9 @@ Five commands ship in Phase 3:
   ``/admin_addrepo`` below).
 - ``/unsetrepo`` — clear the current channel's binding.
 - ``/admin_addrepo repo:<owner>/<repo>`` — admin only. Validates
-  the repo exists via the GitHub REST API and adds it to this
-  server's allowlist.
+  the repo via the sandbox-side ``validate_repo_access`` Modal
+  function and adds it to this server's allowlist tagged with its
+  visibility (``public`` / ``private``).
 - ``/admin_removerepo repo:<owner>/<repo>`` — admin only.
   Autocomplete-fed remove from the allowlist.
 - ``/admin_listrepos`` — admin only. Show the current allowlist.
@@ -21,13 +22,16 @@ these commands in the autocomplete list, and even if they tried
 to invoke them via a raw interaction, Discord would reject before
 the handler runs.
 
-**Why GitHub REST API instead of `git ls-remote`?** The bot's
-Docker image is ``python:3.14-slim`` with no ``git`` binary
-installed, so we can't shell out to git. The REST API check is
-also async-friendly, which fits the discord.py event loop better
-than a blocking subprocess. Unauthenticated GitHub API gives 60
-req/hour which is plenty for an admin command that only fires on
-explicit allowlist additions.
+**Why a sandbox-side Modal function instead of an HTTP probe from
+the bot?** Validating private repos requires the ``github-pat``
+Modal secret. The sandbox image has both git and the secret
+mounted; the bot image is ``python:3.14-slim`` with neither.
+Routing validation through ``validate_repo_access.remote()``
+keeps the secret-mount surface to one container type and lets the
+probe use ``git ls-remote`` directly — same operation Claude Code
+will eventually perform on the same repo. See
+``prd/private-repos.md`` "User decisions locked in" for the
+locked-in choice.
 
 **Repo identity format.** Slash commands accept ``owner/repo``
 short form and the allowlist stores the same. ``RepoConfig``
@@ -43,10 +47,11 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-import aiohttp
 import discord
 import structlog
 from discord import app_commands
+
+from delulu_discord.repo_allowlist import VISIBILITY_PRIVATE, VISIBILITY_PUBLIC
 
 if TYPE_CHECKING:
     from delulu_discord.dispatcher import SandboxDispatcher
@@ -58,12 +63,6 @@ logger = structlog.get_logger()
 
 # Discord caps slash command autocomplete at 25 choices.
 AUTOCOMPLETE_CHOICE_LIMIT = 25
-
-# GitHub REST API timeout for the /admin_addrepo validation call.
-# Short to keep slash commands snappy; the handler defers the
-# response so the user sees a "Bot is thinking..." spinner during
-# the wait.
-GITHUB_API_TIMEOUT_SECONDS = 10
 
 # owner/repo format: alphanumeric, dots, dashes, underscores in
 # both segments. Matches GitHub's repo naming rules. Path-traversal
@@ -187,7 +186,7 @@ def register_slash_commands(
     # ── /admin_addrepo ──────────────────────────────────────
     @tree.command(
         name="admin_addrepo",
-        description="Add a public GitHub repo to this server's allowlist (admin only)",
+        description="Add a GitHub repo to this server's allowlist (admin only)",
     )
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.describe(repo="Repository in owner/repo format")
@@ -207,23 +206,50 @@ def register_slash_commands(
             )
             return
 
-        # Defer — the GitHub API call can take a couple seconds and
-        # Discord wants an initial response within 3s. defer() shows
-        # a "Bot is thinking..." spinner and gives us 15 minutes to
-        # send the followup.
+        # Defer — the sandbox round-trip + git ls-remote can take a
+        # couple seconds and Discord wants an initial response
+        # within 3s. defer() shows a "Bot is thinking..." spinner
+        # and gives us 15 minutes to send the followup.
         await interaction.response.defer(ephemeral=True, thinking=True)
 
-        ok, msg = await _validate_github_public_repo(repo)
-        if not ok:
+        repo_url = f"https://github.com/{repo}"
+        try:
+            result = await dispatcher.validate_repo_access(repo_url)
+        except Exception as exc:
+            logger.exception("admin_addrepo.validate_failed", repo=repo)
             await interaction.followup.send(
-                f"❌ Couldn't add `{repo}`: {msg}",
+                f"⚠️ Couldn't reach the sandbox to validate `{repo}`: "
+                f"`{type(exc).__name__}: {exc}`",
                 ephemeral=True,
             )
             return
 
-        await repo_allowlist.add(interaction.guild_id, repo)
+        status = result.get("status")
+        if status == VISIBILITY_PUBLIC:
+            visibility_label = "public"
+        elif status == VISIBILITY_PRIVATE:
+            visibility_label = "private"
+        elif status == "not_found":
+            await interaction.followup.send(
+                f"❌ Couldn't add `{repo}`: GitHub returned not-found.\n"
+                "Either the repo doesn't exist, or it's private and the "
+                "`github-pat` Modal secret can't see it. Check the URL and "
+                "the PAT's repo scope, then retry.",
+                ephemeral=True,
+            )
+            return
+        else:  # status == "error" (or anything unexpected)
+            err = result.get("error") or "validation failed"
+            await interaction.followup.send(
+                f"❌ Couldn't add `{repo}`: {err}",
+                ephemeral=True,
+            )
+            return
+
+        await repo_allowlist.add(interaction.guild_id, repo, visibility=status)
         await interaction.followup.send(
-            f"✅ `{repo}` added to this server's allowlist.\nUsers can now `/setrepo` against it.",
+            f"✅ `{repo}` ({visibility_label}) added to this server's allowlist.\n"
+            "Users can now `/setrepo` against it.",
             ephemeral=True,
         )
 
@@ -284,7 +310,7 @@ def register_slash_commands(
             )
             return
 
-        current = await repo_allowlist.get(interaction.guild_id)
+        current = await repo_allowlist.list_with_visibility(interaction.guild_id)
         if not current:
             await interaction.response.send_message(
                 "*This server has no allowed repos yet. Add one with `/admin_addrepo`.*",
@@ -292,7 +318,7 @@ def register_slash_commands(
             )
             return
 
-        listing = "\n".join(f"• `{r}`" for r in current)
+        listing = "\n".join(_format_listrepos_line(r, v) for r, v in current)
         await interaction.response.send_message(
             f"**Allowed repos for this server:**\n{listing}",
             ephemeral=True,
@@ -456,34 +482,12 @@ async def _render_commit_result(
     await interaction.followup.send(f"⚠️ Unexpected /commit result: `{result}`")
 
 
-async def _validate_github_public_repo(owner_repo: str) -> tuple[bool, str]:
-    """Verify that a public GitHub repo exists.
+def _format_listrepos_line(owner_repo: str, visibility: str) -> str:
+    """Render a single line in /admin_listrepos.
 
-    Hits ``GET https://api.github.com/repos/<owner>/<repo>`` and
-    interprets the status code:
-
-    - 200: repo exists and is public
-    - 404: repo doesn't exist or is private (we treat both the same
-      since v1 doesn't support private repo provisioning)
-    - 403: rate-limited (60 req/hour unauthenticated)
-    - anything else: surfaced as "GitHub API returned HTTP <code>"
-
-    Returns ``(ok, message)``. The message is suitable for direct
-    use in a Discord error response.
+    Public repos render as plain entries; private repos get a 🔒
+    prefix to match the LiveStatus subtitle's visual convention.
     """
-    url = f"https://api.github.com/repos/{owner_repo}"
-    timeout = aiohttp.ClientTimeout(total=GITHUB_API_TIMEOUT_SECONDS)
-    try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url) as resp:
-                if resp.status == 200:
-                    return True, "ok"
-                if resp.status == 404:
-                    return False, "repo not found (or is private — v1 only supports public repos)"
-                if resp.status == 403:
-                    return False, "GitHub API rate limit exceeded — try again later"
-                return False, f"GitHub API returned HTTP {resp.status}"
-    except TimeoutError:
-        return False, "timed out reaching api.github.com"
-    except aiohttp.ClientError as exc:
-        return False, f"network error: {type(exc).__name__}"
+    if visibility == VISIBILITY_PRIVATE:
+        return f"• 🔒 `{owner_repo}` (private)"
+    return f"• `{owner_repo}`"

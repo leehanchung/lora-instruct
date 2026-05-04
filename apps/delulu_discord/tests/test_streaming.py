@@ -439,3 +439,61 @@ async def test_finalize_done_includes_repo_subtitle() -> None:
     content = msg.edit.call_args.kwargs["content"]
     assert "📁 alice/api-service@main" in content
     assert content.endswith("✅ Done • 1 tools • 1.5s")
+
+
+# ── Private-repo subtitle (🔒 prefix) ────────────────────────────
+# A private allowlisted repo renders with 🔒 between the folder
+# icon and the repo name. Cheap operator-side orientation cue
+# during screen-shares / audits. See prd/private-repos.md "User
+# decisions locked in" §"LiveStatus subtitle when repo is private."
+
+
+def test_render_private_repo_includes_lock_prefix() -> None:
+    rendered = _render(
+        [_tool_use("Read", "`x.py`")],
+        repo_url=REPO_URL,
+        ref="main",
+        is_private=True,
+    )
+    lines = rendered.splitlines()
+    assert lines[1] == "📁 🔒 alice/api-service@main"
+
+
+def test_render_public_repo_omits_lock_prefix() -> None:
+    """Public repos must NOT carry the lock — back-compat with v1 callers."""
+    rendered = _render(
+        [_tool_use("Read", "`x.py`")],
+        repo_url=REPO_URL,
+        ref="main",
+        is_private=False,
+    )
+    lines = rendered.splitlines()
+    assert lines[1] == "📁 alice/api-service@main"
+
+
+def test_render_private_repo_initial_placeholder() -> None:
+    """Initial state with private binding shows placeholder + locked subtitle."""
+    rendered = _render([], repo_url=REPO_URL, ref="HEAD", is_private=True)
+    assert rendered == f"{INITIAL_PLACEHOLDER}\n📁 🔒 alice/api-service@HEAD"
+
+
+async def test_live_status_private_threads_lock_through_flush() -> None:
+    msg = _fake_message()
+    live = LiveStatus(msg, repo_url=REPO_URL, ref="main", is_private=True)
+    live.push(_tool_use("Read", "`x.py`"))
+
+    await live._flush_once()
+    content = msg.edit.call_args.kwargs["content"]
+    assert "📁 🔒 alice/api-service@main" in content
+
+
+async def test_live_status_private_lock_persists_in_finalize() -> None:
+    msg = _fake_message()
+    live = LiveStatus(msg, repo_url=REPO_URL, ref="main", is_private=True)
+    live.push(_tool_use("Read", "`x.py`"))
+    live.push(_tool_result("Read", ok=True))
+
+    await live.finalize_done(num_tools=1, duration_ms=1500)
+    content = msg.edit.call_args.kwargs["content"]
+    assert "📁 🔒 alice/api-service@main" in content
+    assert content.endswith("✅ Done • 1 tools • 1.5s")

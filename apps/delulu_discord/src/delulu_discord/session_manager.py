@@ -33,6 +33,16 @@ class Session:
     thread_id: int
     repo_url: str | None = None
     ref: str = "HEAD"
+    # Whether the bound repo was tagged private on the server's
+    # allowlist at session-creation time. Drives:
+    #   • Refuse-and-instruct on missing PAT in the sandbox-side
+    #     ``run_claude_code`` (skip the provision call entirely
+    #     and yield a clear error).
+    #   • LiveStatus 🔒 prefix in the repo subtitle.
+    # Always False for unbound channels and for sessions whose
+    # repo binding predates the visibility marker (legacy entries
+    # default to public on read).
+    is_private: bool = False
     created_at: float = field(default_factory=time.time)
     last_active_at: float = field(default_factory=time.time)
 
@@ -75,6 +85,7 @@ class SessionManager:
         *,
         repo_url: str | None = None,
         ref: str = "HEAD",
+        is_private: bool = False,
     ) -> Session:
         """Create a new session for a thread, optionally bound to a repo.
 
@@ -84,6 +95,10 @@ class SessionManager:
         Session so subsequent thread replies inherit the binding
         without re-querying ``RepoConfig`` and without re-checking
         the allowlist (bindings are grandfathered).
+
+        ``is_private`` is sourced from the server's allowlist at the
+        same moment — caching it on the Session avoids a per-reply
+        allowlist lookup just to know whether the PAT is required.
 
         The workspace path is deterministic per thread_id — same
         directory on the Modal volume across bot restarts and TTL
@@ -97,6 +112,7 @@ class SessionManager:
             thread_id=thread_id,
             repo_url=repo_url,
             ref=ref,
+            is_private=is_private,
         )
         self._sessions[thread_id] = session
 
@@ -107,6 +123,7 @@ class SessionManager:
             workspace_path=session.workspace_path,
             repo_url=repo_url,
             ref=ref,
+            is_private=is_private,
         )
         return session
 
@@ -151,6 +168,7 @@ class SessionManager:
                 thread_id,
                 repo_url=old.repo_url,
                 ref=old.ref,
+                is_private=old.is_private,
             )
             logger.info(
                 "session.reused_workspace",
@@ -159,6 +177,7 @@ class SessionManager:
                 workspace_path=session.workspace_path,
                 repo_url=session.repo_url,
                 ref=session.ref,
+                is_private=session.is_private,
             )
         else:
             session = self.create_session(thread_id)
