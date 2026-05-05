@@ -146,7 +146,10 @@ jobs:
         # Pin to a specific version so a breaking upstream release
         # can't silently change auth or output formats. Bump
         # deliberately when reviewing the codex changelog.
-        run: npm install -g @openai/codex@0.59.0
+        # 0.59.0 was too old for the gpt-5.4+ models under
+        # ChatGPT-account auth ("requires a newer version of
+        # Codex"); 0.128.0 is the current stable.
+        run: npm install -g @openai/codex@0.128.0
 
       - name: Run Codex
         id: run_codex
@@ -184,20 +187,17 @@ jobs:
           # escape. Output goes to a file so we can hand it to the
           # Submit step without quoting drama.
           #
-          # Model selection under ChatGPT-account auth has been a
-          # journey:
-          #   - `gpt-5.1-codex-max` (CLI default): API-key-only.
-          #   - `gpt-5-codex`: API-key-only.
-          #   - `gpt-5.5`: requires a newer codex CLI than 0.59.0.
-          # `gpt-5.4` is the highest tier that's both available
-          # under ChatGPT-account auth AND supported by this CLI
-          # version. Bump the codex@ pin above and revisit this if
-          # we want gpt-5.5. Avoid `gpt-5.3-codex*` — known flaky
-          # on ChatGPT auth (codex#14181, #14306).
+          # `gpt-5.5` is the current ChatGPT-account default (per
+          # https://developers.openai.com/codex/models). The CLI's
+          # auto-default can land on API-key-only models (we hit
+          # `gpt-5.1-codex-max` and `gpt-5-codex` rejections under
+          # account auth on the way here), so the explicit pin is
+          # load-bearing. Avoid `gpt-5.3-codex*` — known flaky on
+          # ChatGPT auth (codex#14181, #14306).
           codex exec \
             --skip-git-repo-check \
             --sandbox workspace-write \
-            --model gpt-5.4 \
+            --model gpt-5.5 \
             --output-last-message "$OUT_FILE" \
             "$PROMPT"
 
