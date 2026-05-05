@@ -1,0 +1,72 @@
+name: delulu e2e
+
+# Scheduled end-to-end tests that call the deployed Modal sandbox.
+#
+# These tests exercise the full sandbox path: container boot, Claude
+# Code execution, volume I/O, repo provisioning, and event streaming.
+# They burn real Claude tokens and Modal compute, so they run on a
+# daily schedule rather than on every push.
+#
+# Manual trigger (workflow_dispatch) is available for ad-hoc runs
+# after a deploy or config change.
+
+on:
+  schedule:
+    # Daily at 08:00 UTC (midnight PST)
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+jobs:
+  e2e-sandbox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/delulu_sandbox_modal
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: install deps
+        run: uv sync --extra dev
+
+      - name: run integration tests
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          uv run pytest tests/integration/ -v \
+            --timeout=180 \
+            --tb=short \
+            -x
+
+  # Dispatcher tests need both delulu_discord and delulu_sandbox_modal
+  # installed so the import of SandboxDispatcher resolves.
+  e2e-dispatcher:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: install sandbox + discord packages
+        run: |
+          cd apps/delulu_sandbox_modal && uv sync --extra dev
+          cd ../delulu_discord && uv sync --extra dev
+
+      - name: run dispatcher integration tests
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          cd apps/delulu_sandbox_modal
+          uv run pytest tests/integration/test_dispatcher.py -v \
+            --timeout=180 \
+            --tb=short \
+            -x
