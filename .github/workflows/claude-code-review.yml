@@ -1,35 +1,12 @@
 name: Claude Code Review
 
-# Auto-reviews pull requests with Claude Code using a Pro/Max OAuth token
-# (no Anthropic API key needed). Reviews count against subscription rate
-# limits — the concurrency block collapses rapid-fire pushes so we don't
-# burn quota re-reviewing the same PR on every force-push.
-#
-# This file only handles the auto-review path. @claude mentions (on PR
-# comments, inline review comments, review bodies, and issues) go
-# through claude.yml — the two workflows have different permissions
-# and trigger surfaces.
-#
-# Setup:
-#   1. Run `claude setup-token` locally → copy the printed token
-#   2. Add as a repo secret named CLAUDE_CODE_OAUTH_TOKEN
-#   3. (Optional) run `/install-github-app` inside Claude Code to auto-wire
-
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
 
 jobs:
   review:
-    # Pinned so branch protection can require the check by a stable name
-    # (`Claude PR review`) independent of workflow/file renames.
     name: Claude PR review
-    # Skip drafts, and skip PRs authored by claude[bot]. The bot filter
-    # prevents review→fix→review loops: when the claude.yml tag job
-    # pushes a fix commit, that fires a pull_request synchronize event;
-    # without this filter we'd burn quota re-reviewing bot-authored
-    # changes, and claude-code-action would fail on them anyway with
-    # "Workflow initiated by non-human actor".
     if: >-
       github.event.pull_request.draft == false
       && github.event.pull_request.user.login != 'claude[bot]'
@@ -41,10 +18,6 @@ jobs:
       contents: read
       pull-requests: write
       issues: read
-      # Required for OIDC token exchange when the Anthropic GitHub App is
-      # installed — the action mints a GitHub-signed identity token and
-      # trades it for short-lived Anthropic credentials instead of using
-      # the raw CLAUDE_CODE_OAUTH_TOKEN secret.
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -54,41 +27,6 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # Allow claude[bot] as a triggering actor. The action's
-          # default `allowed_bots: ""` rejects any event triggered by
-          # a bot as a prompt-injection defense. That's correct for
-          # untrusted bots, but rejects our own fix-job re-review
-          # flow: when claude.yml pushes a fix commit to a PR, the
-          # resulting `pull_request synchronize` event has
-          # `github.actor == 'claude[bot]'`, and without this line
-          # the review job fails at startup with "Workflow initiated
-          # by non-human actor". That would block the whole "fix,
-          # then re-review and approve" loop.
-          #
-          # Safe in our case: the prompt is fixed by us (the bot
-          # doesn't control instructions), and the diff content is
-          # still under human control (human authored the PR, bot
-          # only pushed a commit the human explicitly requested via
-          # @claude). Keeping the list narrow to claude[bot] only so
-          # other bots (dependabot etc.) still require manual review.
           allowed_bots: "claude[bot]"
-          # Surface the agent's full stdout/stderr in workflow logs so we
-          # can see what the review agent actually did (tool calls, final
-          # message) when the reviewer comment doesn't show up on a PR.
-          # Flip back to false once review behavior is stable.
           show_full_output: true
-          # Load our local code-review plugin from this repo's
-          # `.claude-plugin/marketplace.json`. The plugin's slash
-          # command lives at `plugins/code-review/commands/code-review.md`
-          # and its allowed tools (Write, WebFetch, Bash(gh pr review:*))
-          # are declared in that file's frontmatter.
-          #
-          # Gotcha: claude-code-action fetches the plugin from the
-          # default branch of the URL, NOT from the checked-out tree.
-          # So edits to `plugins/code-review/` on a PR branch won't be
-          # exercised by that same PR's review. Changes take effect
-          # only after they land on `main` — same self-validation
-          # caveat as the workflow files themselves.
-          plugin_marketplaces: 'https://github.com/leehanchung/SMILE-factory.git'
-          plugins: 'code-review@smile-factory'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          prompt: '/review-pr ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
