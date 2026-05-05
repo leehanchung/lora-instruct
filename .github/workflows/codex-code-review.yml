@@ -184,15 +184,20 @@ jobs:
           # escape. Output goes to a file so we can hand it to the
           # Submit step without quoting drama.
           #
-          # `--model gpt-5-codex` is required under ChatGPT account
-          # auth — the CLI's API-key default (gpt-5.1-codex-max) is
-          # not enabled for ChatGPT-account sessions and 400's. The
-          # explicit pin also stops a future codex release from
-          # silently switching defaults under us.
+          # `--model gpt-5.5` is the current ChatGPT-account default
+          # (per https://developers.openai.com/codex/models). The
+          # CLI's auto-default under account auth picked
+          # `gpt-5.1-codex-max` and `gpt-5-codex` — both are
+          # API-key-only and 400 with "not supported when using
+          # Codex with a ChatGPT account." The explicit pin also
+          # stops a future codex release from silently flipping
+          # defaults. Fallback if 5.5 isn't on this account yet:
+          # `gpt-5.4` (drop `.5` → `.4`); avoid `gpt-5.3-codex*`,
+          # known-flaky on ChatGPT auth (codex#14181, #14306).
           codex exec \
             --skip-git-repo-check \
             --sandbox workspace-write \
-            --model gpt-5-codex \
+            --model gpt-5.5 \
             --output-last-message "$OUT_FILE" \
             "$PROMPT"
 
