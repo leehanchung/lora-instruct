@@ -53,6 +53,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          # ``prd`` is not part of the Conventional Commits spec but is
+          # used in this repo for changes under ``prd/`` — adding or
+          # revising a Product Requirements Document. ``docs:`` is
+          # technically accurate for a plan-doc commit but ``prd:`` is
+          # more specific and already in use on main (e.g. PR #44).
           types: |
             feat
             fix
@@ -64,6 +69,7 @@ jobs:
             build
             perf
             style
+            prd
           requireScope: false
           subjectPattern: ^[A-Za-z].+[^.]$
           subjectPatternError: |

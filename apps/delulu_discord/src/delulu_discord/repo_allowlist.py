@@ -8,14 +8,22 @@ bot at huge or unrelated repositories. See the "Access control and
 threat model" section of ``prd/repo-provisioning.md`` for the full
 threat model.
 
-Keyed by Discord ``guild_id``; values are lists of ``owner/repo``
-short forms (e.g. ``["alice/api-service", "alice-org/shared-lib"]``).
+Keyed by Discord ``guild_id``. Each entry tracks visibility
+(``public`` / ``private``) at add time so the dispatch path can
+decide whether the ``github-pat`` Modal secret is required without
+re-hitting the network. See ``prd/private-repos.md`` for the
+visibility marker design.
 
-Phase 2 ships the data store; Phase 4 wires it into the
-``/admin_addrepo`` / ``/admin_removerepo`` / ``/admin_listrepos``
-slash commands gated on Discord's ``MANAGE_GUILD`` permission.
-Until then this class exists but has no callers in the bot's
-runtime path.
+**Storage shape.** Each guild's value is now a dict keyed by
+``owner/repo`` with a per-entry payload:
+
+    {"alice/api-service": {"visibility": "public"},
+     "alice/internal-api": {"visibility": "private"}}
+
+v1 entries (pre-marker) were stored as a flat ``list[str]``. ``get``
+detects the legacy shape on read and treats every entry as
+``public`` — which is correct, since v1 explicitly rejected
+private repos at add time.
 
 **Concurrency note.** ``add()`` / ``remove()`` are read-modify-write
 on the underlying ``modal.Dict`` value, which has a TOCTOU window
@@ -36,6 +44,9 @@ logger = structlog.get_logger()
 
 DICT_NAME = "discord-orchestrator-allowlist"
 
+VISIBILITY_PUBLIC = "public"
+VISIBILITY_PRIVATE = "private"
+
 
 class RepoAllowlist:
     """Modal-Dict-backed per-guild repo allowlist.
@@ -49,24 +60,68 @@ class RepoAllowlist:
         self._dict = modal.Dict.from_name(DICT_NAME, create_if_missing=True)
 
     async def get(self, guild_id: int) -> list[str]:
-        """Return the allowlist for a guild (empty list if unset).
+        """Return the list of allowed ``owner/repo`` short forms.
 
-        Used by ``/setrepo`` autocomplete + validation, and by
-        ``/admin_listrepos`` to show the current state.
+        Order is the dict's insertion order. Visibility is dropped
+        on this projection — call ``get_visibility`` (or
+        ``list_with_visibility``) when you need it. The bare-list
+        view exists for backwards compatibility with autocomplete +
+        ``contains`` callers that don't care about visibility.
         """
-        return list(await self._dict.get.aio(guild_id) or [])
+        raw = await self._dict.get.aio(guild_id)
+        return [owner_repo for owner_repo, _ in _iter_entries(raw)]
 
-    async def add(self, guild_id: int, owner_repo: str) -> None:
-        """Add an entry to a guild's allowlist. Idempotent."""
-        current = await self.get(guild_id)
-        if owner_repo in current:
-            return
-        current.append(owner_repo)
+    async def list_with_visibility(self, guild_id: int) -> list[tuple[str, str]]:
+        """Return ``(owner_repo, visibility)`` tuples for the guild.
+
+        Used by ``/admin_listrepos`` to surface the public/private
+        split. Public if the entry is missing a marker (legacy v1
+        rows) or explicitly tagged ``public``.
+        """
+        raw = await self._dict.get.aio(guild_id)
+        return list(_iter_entries(raw))
+
+    async def get_visibility(self, guild_id: int, owner_repo: str) -> str | None:
+        """Return ``"public"`` / ``"private"`` for an entry, or None if absent.
+
+        Called from the dispatch path to decide whether to refuse-
+        and-instruct on a missing PAT. Returning ``None`` means the
+        entry isn't on the allowlist — caller should treat as a
+        validation error.
+        """
+        raw = await self._dict.get.aio(guild_id)
+        for entry, visibility in _iter_entries(raw):
+            if entry == owner_repo:
+                return visibility
+        return None
+
+    async def add(
+        self,
+        guild_id: int,
+        owner_repo: str,
+        *,
+        visibility: str = VISIBILITY_PUBLIC,
+    ) -> None:
+        """Add (or refresh) an entry to a guild's allowlist.
+
+        Idempotent on the ``owner_repo`` key — re-adding an existing
+        entry overwrites the visibility marker, which is the right
+        behavior when an admin re-runs ``/admin_addrepo`` after a
+        repo flips public→private upstream.
+        """
+        if visibility not in (VISIBILITY_PUBLIC, VISIBILITY_PRIVATE):
+            raise ValueError(f"unknown visibility: {visibility!r}")
+
+        raw = await self._dict.get.aio(guild_id)
+        current = {entry: vis for entry, vis in _iter_entries(raw)}
+        current[owner_repo] = visibility
+
         await self._dict.put.aio(guild_id, current)
         logger.info(
             "repo_allowlist.add",
             guild_id=guild_id,
             owner_repo=owner_repo,
+            visibility=visibility,
         )
 
     async def remove(self, guild_id: int, owner_repo: str) -> None:
@@ -79,10 +134,11 @@ class RepoAllowlist:
         check, so the recovery path is "rebind to an allowed repo or
         unbind manually."
         """
-        current = await self.get(guild_id)
+        raw = await self._dict.get.aio(guild_id)
+        current = {entry: vis for entry, vis in _iter_entries(raw)}
         if owner_repo not in current:
             return
-        current.remove(owner_repo)
+        del current[owner_repo]
         await self._dict.put.aio(guild_id, current)
         logger.info(
             "repo_allowlist.remove",
@@ -93,3 +149,35 @@ class RepoAllowlist:
     async def contains(self, guild_id: int, owner_repo: str) -> bool:
         """True iff ``owner_repo`` is on ``guild_id``'s allowlist."""
         return owner_repo in await self.get(guild_id)
+
+
+def _iter_entries(raw: object) -> list[tuple[str, str]]:
+    """Normalize the stored value to ``[(owner_repo, visibility)]`` tuples.
+
+    Three accepted on-disk shapes:
+
+    1. ``None`` → no entries.
+    2. ``list[str]`` → legacy v1 rows; every entry is ``public``.
+    3. ``dict[str, dict]`` → current shape; ``visibility`` field
+       extracted from the per-entry payload (defaults to ``public``
+       if missing for forward-compat).
+
+    Anything else returns an empty list — fail closed rather than
+    crash the dispatch path on a corrupted dict value.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [(entry, VISIBILITY_PUBLIC) for entry in raw if isinstance(entry, str)]
+    if isinstance(raw, dict):
+        out: list[tuple[str, str]] = []
+        for entry, payload in raw.items():
+            if not isinstance(entry, str):
+                continue
+            if isinstance(payload, dict):
+                visibility = payload.get("visibility", VISIBILITY_PUBLIC)
+            else:
+                visibility = VISIBILITY_PUBLIC
+            out.append((entry, visibility))
+        return out
+    return []

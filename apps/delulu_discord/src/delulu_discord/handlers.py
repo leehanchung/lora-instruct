@@ -7,10 +7,12 @@ from typing import TYPE_CHECKING
 import discord
 import structlog
 
+from delulu_discord.repo_allowlist import VISIBILITY_PRIVATE
 from delulu_discord.streaming import LiveStatus, _render
 
 if TYPE_CHECKING:
     from delulu_discord.dispatcher import SandboxDispatcher
+    from delulu_discord.repo_allowlist import RepoAllowlist
     from delulu_discord.repo_config import RepoConfig
     from delulu_discord.session_manager import SessionManager
     from delulu_discord.settings import Settings
@@ -27,11 +29,13 @@ class MessageHandler:
         session_manager: SessionManager,
         dispatcher: SandboxDispatcher,
         repo_config: RepoConfig,
+        repo_allowlist: RepoAllowlist,
     ) -> None:
         self.settings = settings
         self.sessions = session_manager
         self.dispatcher = dispatcher
         self.repo_config = repo_config
+        self.repo_allowlist = repo_allowlist
 
     async def handle_channel_message(self, message: discord.Message, prompt: str) -> None:
         """New @-mention in a channel → create thread, dispatch task.
@@ -51,10 +55,30 @@ class MessageHandler:
         binding = await self.repo_config.get(message.channel.id)
         if binding is None:
             repo_url, ref = None, self.settings.default_git_ref
+            is_private = False
         else:
             repo_url, ref = binding
+            # Look up the repo's visibility on the server's allowlist.
+            # Bound repos are *almost always* on the allowlist (because
+            # /setrepo enforces it at bind time), but defensive: if a
+            # repo was removed from the allowlist after binding, the
+            # lookup returns None and we fall back to public — which
+            # means the dispatch goes through unauthenticated and
+            # fails cleanly on a private repo with the standard git
+            # auth error rather than an opaque crash.
+            owner_repo = _short_repo_from_url(repo_url)
+            if message.guild is not None and owner_repo is not None:
+                visibility = await self.repo_allowlist.get_visibility(message.guild.id, owner_repo)
+                is_private = visibility == VISIBILITY_PRIVATE
+            else:
+                is_private = False
 
-        session = self.sessions.create_session(thread.id, repo_url=repo_url, ref=ref)
+        session = self.sessions.create_session(
+            thread.id,
+            repo_url=repo_url,
+            ref=ref,
+            is_private=is_private,
+        )
         attachments = await _download_attachments(message)
 
         logger.info(
@@ -65,6 +89,7 @@ class MessageHandler:
             attachment_count=len(attachments),
             repo_url=repo_url,
             ref=ref,
+            is_private=is_private,
         )
 
         await self._dispatch_and_respond(
@@ -128,7 +153,12 @@ class MessageHandler:
         # The subsequent flush loop and finalize_done will continue
         # to pass repo_url/ref through _render so the subtitle stays
         # visible across the whole message lifecycle.
-        initial_content = _render([], repo_url=session.repo_url, ref=session.ref)
+        initial_content = _render(
+            [],
+            repo_url=session.repo_url,
+            ref=session.ref,
+            is_private=session.is_private,
+        )
         status_msg = await thread.send(
             initial_content,
             allowed_mentions=discord.AllowedMentions.none(),
@@ -138,6 +168,7 @@ class MessageHandler:
             status_msg,
             repo_url=session.repo_url,
             ref=session.ref,
+            is_private=session.is_private,
         )
         live.start()
 
@@ -152,6 +183,7 @@ class MessageHandler:
                 prompt=prompt,
                 repo_url=session.repo_url,
                 ref=session.ref,
+                is_private=session.is_private,
                 resume=resume,
                 attachments=attachments,
                 message_id=message_id,
@@ -207,6 +239,29 @@ class MessageHandler:
                 filename="claude-output.txt",
             )
             await thread.send("Output was too long for a message:", file=file)
+
+
+def _short_repo_from_url(repo_url: str) -> str | None:
+    """Return ``owner/repo`` from a stored repo URL, or None if unparseable.
+
+    Mirrors the logic in ``streaming._short_repo_name`` but returns
+    ``None`` on failure (instead of falling back to the raw URL)
+    because the caller uses the result as an allowlist key — a bad
+    parse should skip the lookup, not query for a nonsense entry.
+    """
+    from urllib.parse import urlparse
+
+    url = repo_url.strip().rstrip("/")
+    if url.endswith(".git"):
+        url = url[:-4].rstrip("/")
+    if url.startswith("git@"):
+        _, _, path = url[len("git@") :].partition(":")
+    else:
+        path = urlparse(url).path.lstrip("/")
+    parts = [p for p in path.split("/") if p]
+    if len(parts) >= 2:
+        return f"{parts[-2]}/{parts[-1]}"
+    return None
 
 
 async def _download_attachments(message: discord.Message) -> list[tuple[str, bytes]]:

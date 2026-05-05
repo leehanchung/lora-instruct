@@ -62,7 +62,7 @@ def test_text_event_appends_writing_marker() -> None:
     assert rendered.splitlines()[-1].startswith("✍️")
 
 
-def test_thinking_block_replaces_default_header_with_spoiler() -> None:
+def test_thinking_block_replaces_default_header() -> None:
     rendered = _render(
         [
             {"type": "thinking", "text": "considering the approach"},
@@ -70,8 +70,7 @@ def test_thinking_block_replaces_default_header_with_spoiler() -> None:
         ]
     )
     lines = rendered.splitlines()
-    assert lines[0].startswith("||🧠 Reasoning:")
-    assert lines[0].endswith("||")
+    assert lines[0].startswith("🧠")
     assert "considering the approach" in lines[0]
     # Default placeholder should NOT appear when thinking is present
     assert INITIAL_PLACEHOLDER not in rendered
@@ -91,9 +90,9 @@ def test_multiple_thinking_blocks_keeps_latest_only() -> None:
 def test_long_thinking_preview_is_truncated() -> None:
     long_thought = "a" * 500
     rendered = _render([{"type": "thinking", "text": long_thought}])
-    assert "…||" in rendered
-    # Spoiler wrapper + emoji + "Reasoning: " + up to 150 chars of thought + "…"
-    assert len(rendered) < 250
+    assert "…" in rendered
+    # Emoji + up to 150 chars of thought + "…"
+    assert len(rendered) < 200
 
 
 def test_fifo_matching_of_same_tool_called_twice() -> None:
@@ -129,7 +128,7 @@ def test_full_progression_matches_plan_example() -> None:
     ]
     rendered = _render(transcript)
     lines = rendered.splitlines()
-    assert lines[0].startswith("||🧠 Reasoning:")
+    assert lines[0].startswith("🧠")
     assert "🔧 Read `src/app.py` ✓" in rendered
     assert "🔧 Read `src/handlers.py` ✓" in rendered
     # Grep is still pending — no marker
@@ -184,7 +183,7 @@ def test_render_with_done_footer_drops_writing_marker() -> None:
     assert rendered.splitlines()[-1] == "✅ Done • 1 tools • 0.5s"
 
 
-def test_render_with_done_footer_preserves_thinking_spoiler() -> None:
+def test_render_with_done_footer_preserves_thinking_header() -> None:
     transcript = [
         {"type": "thinking", "text": "thinking about the approach"},
         _tool_use("Read", "`x.py`"),
@@ -192,7 +191,7 @@ def test_render_with_done_footer_preserves_thinking_spoiler() -> None:
     ]
     rendered = _render(transcript, done_footer="✅ Done • 1 tools • 2.0s")
     lines = rendered.splitlines()
-    assert lines[0].startswith("||🧠 Reasoning:")
+    assert lines[0].startswith("🧠")
     assert "thinking about the approach" in lines[0]
     assert lines[-1] == "✅ Done • 1 tools • 2.0s"
 
@@ -328,7 +327,7 @@ def test_render_with_repo_adds_subtitle_under_header() -> None:
     assert "🔧 Read `x.py`" in rendered
 
 
-def test_render_with_repo_under_thinking_spoiler() -> None:
+def test_render_with_repo_under_thinking_header() -> None:
     """When reasoning is present the spoiler header is line 0; repo line is line 1."""
     rendered = _render(
         [
@@ -339,7 +338,7 @@ def test_render_with_repo_under_thinking_spoiler() -> None:
         ref="main",
     )
     lines = rendered.splitlines()
-    assert lines[0].startswith("||🧠 Reasoning:")
+    assert lines[0].startswith("🧠")
     assert lines[1] == "📁 alice/api-service@main"
 
 
@@ -439,4 +438,62 @@ async def test_finalize_done_includes_repo_subtitle() -> None:
     msg.edit.assert_called_once()
     content = msg.edit.call_args.kwargs["content"]
     assert "📁 alice/api-service@main" in content
+    assert content.endswith("✅ Done • 1 tools • 1.5s")
+
+
+# ── Private-repo subtitle (🔒 prefix) ────────────────────────────
+# A private allowlisted repo renders with 🔒 between the folder
+# icon and the repo name. Cheap operator-side orientation cue
+# during screen-shares / audits. See prd/private-repos.md "User
+# decisions locked in" §"LiveStatus subtitle when repo is private."
+
+
+def test_render_private_repo_includes_lock_prefix() -> None:
+    rendered = _render(
+        [_tool_use("Read", "`x.py`")],
+        repo_url=REPO_URL,
+        ref="main",
+        is_private=True,
+    )
+    lines = rendered.splitlines()
+    assert lines[1] == "📁 🔒 alice/api-service@main"
+
+
+def test_render_public_repo_omits_lock_prefix() -> None:
+    """Public repos must NOT carry the lock — back-compat with v1 callers."""
+    rendered = _render(
+        [_tool_use("Read", "`x.py`")],
+        repo_url=REPO_URL,
+        ref="main",
+        is_private=False,
+    )
+    lines = rendered.splitlines()
+    assert lines[1] == "📁 alice/api-service@main"
+
+
+def test_render_private_repo_initial_placeholder() -> None:
+    """Initial state with private binding shows placeholder + locked subtitle."""
+    rendered = _render([], repo_url=REPO_URL, ref="HEAD", is_private=True)
+    assert rendered == f"{INITIAL_PLACEHOLDER}\n📁 🔒 alice/api-service@HEAD"
+
+
+async def test_live_status_private_threads_lock_through_flush() -> None:
+    msg = _fake_message()
+    live = LiveStatus(msg, repo_url=REPO_URL, ref="main", is_private=True)
+    live.push(_tool_use("Read", "`x.py`"))
+
+    await live._flush_once()
+    content = msg.edit.call_args.kwargs["content"]
+    assert "📁 🔒 alice/api-service@main" in content
+
+
+async def test_live_status_private_lock_persists_in_finalize() -> None:
+    msg = _fake_message()
+    live = LiveStatus(msg, repo_url=REPO_URL, ref="main", is_private=True)
+    live.push(_tool_use("Read", "`x.py`"))
+    live.push(_tool_result("Read", ok=True))
+
+    await live.finalize_done(num_tools=1, duration_ms=1500)
+    content = msg.edit.call_args.kwargs["content"]
+    assert "📁 🔒 alice/api-service@main" in content
     assert content.endswith("✅ Done • 1 tools • 1.5s")
