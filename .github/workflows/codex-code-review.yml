@@ -183,9 +183,16 @@ jobs:
           # write its scratch dirs but blocks network/filesystem
           # escape. Output goes to a file so we can hand it to the
           # Submit step without quoting drama.
+          #
+          # `--model gpt-5-codex` is required under ChatGPT account
+          # auth — the CLI's API-key default (gpt-5.1-codex-max) is
+          # not enabled for ChatGPT-account sessions and 400's. The
+          # explicit pin also stops a future codex release from
+          # silently switching defaults under us.
           codex exec \
             --skip-git-repo-check \
             --sandbox workspace-write \
+            --model gpt-5-codex \
             --output-last-message "$OUT_FILE" \
             "$PROMPT"
 
