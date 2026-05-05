@@ -242,6 +242,7 @@ provisioner_image = (
 @app.function(
     image=provisioner_image,
     volumes={"/vol": volume},
+    secrets=[github_pat_secret],
     max_containers=1,
     timeout=300,
 )
@@ -259,19 +260,29 @@ def provision_workspace(
 
     Commits the volume before returning so the caller's subsequent
     ``volume.reload()`` picks up the newly-created worktree.
+
+    Mounts the ``github-pat`` secret so private-repo clones/fetches
+    can authenticate via ``GIT_ASKPASS``. The token is passed
+    through to the underlying ``repo_provisioner.provision_workspace``
+    only when non-empty + non-placeholder; public-repo clones run
+    unauthenticated as before. Refuse-and-instruct on missing PAT
+    for a known-private repo lives in ``run_claude_code`` so the
+    error path doesn't burn the ``max_containers=1`` slot.
     """
-    # Import inside the function body so the top-level module import
-    # of `app.py` doesn't pull in repo_provisioner at deploy-parse
-    # time. (Not strictly necessary — repo_provisioner has no Modal
-    # decorators and is safe to import at module level — but keeping
-    # heavyweight imports lazy matches the existing pattern in
-    # `run_claude_code` and avoids any surprise at `modal deploy`.)
+    import os
+
+    # Lazy import — see /commit's notes for the rationale.
     from delulu_sandbox_modal import repo_provisioner
+
+    github_token = (os.environ.get("GITHUB_TOKEN") or "").strip()
+    if github_token == "placeholder":
+        github_token = ""
 
     workspace_path, timings = repo_provisioner.provision_workspace(
         thread_id=thread_id,
         repo_url=repo_url,
         ref=ref,
+        github_token=github_token or None,
     )
 
     logger.info(
@@ -291,6 +302,57 @@ def provision_workspace(
     # can `volume.reload()` and see the fresh worktree + bare cache.
     volume.commit()
     return workspace_path
+
+
+# ── Allowlist validation Modal Function ──────────────────────
+# Sandbox-side `git ls-remote` probe used by /admin_addrepo.
+# Lives here (not on the bot) because the bot's image is
+# `python:3.14-slim` with no git binary and no github-pat secret
+# mounted — extending either would widen the bot's secret/binary
+# surface for a single-call admin command. The provisioner image
+# already has both, and the call is cheap (~1s warm) so the Modal
+# round-trip fits inside Discord's 3s interaction-token budget
+# (the slash command defers immediately, giving us 15 minutes).
+@app.function(
+    image=provisioner_image,
+    secrets=[github_pat_secret],
+    timeout=30,
+)
+def validate_repo_access(repo_url: str) -> dict[str, Any]:
+    """Classify ``repo_url`` as public / private / not_found.
+
+    Wraps ``repo_provisioner.validate_repo_access`` (which does the
+    actual ``git ls-remote`` probes). The PAT is read from the
+    mounted ``github-pat`` secret; placeholder/empty values are
+    treated as no-token, which means private repos that need the
+    PAT to be visible will return ``not_found`` rather than
+    ``private`` — the right failure mode (admin gets a clear
+    error, fixes the secret, retries).
+
+    Returns a JSON-serializable dict so Modal's RPC layer doesn't
+    try to (de)serialize the dataclass across the boundary.
+    """
+    import os
+
+    from delulu_sandbox_modal import repo_provisioner
+
+    github_token = (os.environ.get("GITHUB_TOKEN") or "").strip()
+    if github_token == "placeholder":
+        github_token = ""
+
+    result = repo_provisioner.validate_repo_access(
+        repo_url,
+        github_token=github_token or None,
+    )
+
+    logger.info(
+        "validate_repo_access",
+        repo_url=repo_url,
+        status=result.status,
+        had_token=bool(github_token),
+    )
+
+    return {"status": result.status, "error": result.error}
 
 
 # ── Commit-back Modal Function ───────────────────────────────
@@ -424,6 +486,7 @@ def run_claude_code(
     thread_id: int | None = None,
     repo_url: str | None = None,
     ref: str = "HEAD",
+    is_private: bool = False,
     resume: bool = False,
     attachments: list[tuple[str, bytes]] | None = None,
     message_id: int | None = None,
@@ -462,6 +525,33 @@ def run_claude_code(
     import shutil
     import subprocess
     import threading
+
+    # ── Refuse-and-instruct: private repo with no PAT ──────
+    # Private repos require GITHUB_TOKEN for the clone/fetch path.
+    # Catch the missing-PAT case here, before the provision_workspace
+    # round-trip, so the user gets a clear instruction instead of an
+    # opaque clone failure. Public repos and unbound channels skip
+    # this check entirely.
+    if is_private and repo_url is not None:
+        github_token = (os.environ.get("GITHUB_TOKEN") or "").strip()
+        if not github_token or github_token == "placeholder":
+            logger.info(
+                "dispatch.refused_no_pat",
+                session_id=session_id,
+                thread_id=thread_id,
+                repo_url=repo_url,
+            )
+            yield {
+                "type": "error",
+                "message": (
+                    "Can't dispatch — `github-pat` Modal secret missing or empty, "
+                    "and this channel is bound to a private repo.\n\n"
+                    "Run on your laptop:\n"
+                    "```\nmodal secret create github-pat GITHUB_TOKEN=<your-pat> --force\n```\n"
+                    "Then re-mention `@claude` in this thread."
+                ),
+            }
+            return
 
     # ── Workspace derivation ────────────────────────────────
     if workspace_path is None:

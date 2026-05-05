@@ -399,3 +399,232 @@ class TestCommitWorkspaceChanges:
         )
         assert result.status == "no_workspace"
         assert "999" in (result.error or "")
+
+
+class TestAskpassEnv:
+    """Cover the GIT_ASKPASS env-builder used by clone/fetch/ls-remote.
+
+    The auth pattern is shared with /commit's _push_with_askpass — both
+    write a tiny shell script that responds with the PAT. These tests
+    pin the script's contract: shape, perms, env wiring, cleanup on
+    exit.
+    """
+
+    def test_no_token_yields_none(self):
+        from delulu_sandbox_modal.repo_provisioner import _askpass_env
+
+        with _askpass_env(None) as env:
+            assert env is None
+        with _askpass_env("") as env:
+            assert env is None
+
+    def test_with_token_writes_executable_script(self):
+        from delulu_sandbox_modal.repo_provisioner import _askpass_env
+
+        with _askpass_env("ghp_test_token_12345") as env:
+            assert env is not None
+            askpass_path = env["GIT_ASKPASS"]
+            assert env["GIT_TERMINAL_PROMPT"] == "0"
+            assert os.path.isfile(askpass_path)
+            # Owner-only rwx — the script holds the PAT in plaintext
+            # so it must not be world-readable.
+            mode = os.stat(askpass_path).st_mode & 0o777
+            assert mode == 0o700
+            with open(askpass_path) as f:
+                contents = f.read()
+            assert "ghp_test_token_12345" in contents
+            assert "echo 'git'" in contents
+
+        # After context exit, the script is removed so the PAT
+        # doesn't outlive the operation.
+        assert not os.path.exists(askpass_path)
+
+    def test_cleanup_runs_even_on_exception(self):
+        from delulu_sandbox_modal.repo_provisioner import _askpass_env
+
+        captured_path = None
+        try:
+            with _askpass_env("ghp_x") as env:
+                captured_path = env["GIT_ASKPASS"]
+                raise RuntimeError("simulated failure")
+        except RuntimeError:
+            pass
+
+        assert captured_path is not None
+        assert not os.path.exists(captured_path)
+
+
+class TestValidateRepoAccess:
+    """Classification logic for /admin_addrepo's validation.
+
+    Stubs out ``_ls_remote_succeeds`` so the tests don't actually
+    shell out to git — the classification logic is what's worth
+    pinning, not the git invocation itself.
+    """
+
+    def test_public_when_anonymous_succeeds(self, monkeypatch):
+        from delulu_sandbox_modal import repo_provisioner
+
+        calls: list[str | None] = []
+
+        def fake_ls_remote(url, *, github_token):
+            calls.append(github_token)
+            return github_token is None  # anonymous succeeds
+
+        monkeypatch.setattr(repo_provisioner, "_ls_remote_succeeds", fake_ls_remote)
+        result = repo_provisioner.validate_repo_access(
+            "https://github.com/alice/api-service",
+            github_token="ghp_x",
+        )
+        assert result.status == repo_provisioner.ACCESS_PUBLIC
+        # Anonymous probe ran; authenticated did NOT (short-circuit).
+        assert calls == [None]
+
+    def test_private_when_anonymous_fails_authed_succeeds(self, monkeypatch):
+        from delulu_sandbox_modal import repo_provisioner
+
+        def fake_ls_remote(url, *, github_token):
+            return github_token is not None  # only authed succeeds
+
+        monkeypatch.setattr(repo_provisioner, "_ls_remote_succeeds", fake_ls_remote)
+        result = repo_provisioner.validate_repo_access(
+            "https://github.com/alice/private-svc",
+            github_token="ghp_x",
+        )
+        assert result.status == repo_provisioner.ACCESS_PRIVATE
+
+    def test_not_found_when_both_fail(self, monkeypatch):
+        from delulu_sandbox_modal import repo_provisioner
+
+        monkeypatch.setattr(
+            repo_provisioner,
+            "_ls_remote_succeeds",
+            lambda url, *, github_token: False,
+        )
+        result = repo_provisioner.validate_repo_access(
+            "https://github.com/alice/ghost",
+            github_token="ghp_x",
+        )
+        assert result.status == repo_provisioner.ACCESS_NOT_FOUND
+
+    def test_not_found_when_no_token_and_anonymous_fails(self, monkeypatch):
+        """Without a token, only the anonymous probe runs.
+
+        A private repo + no token surfaces as not_found, which
+        is the right /admin_addrepo failure mode (admin gets a
+        clear instruction to fix the secret and retry).
+        """
+        from delulu_sandbox_modal import repo_provisioner
+
+        monkeypatch.setattr(
+            repo_provisioner,
+            "_ls_remote_succeeds",
+            lambda url, *, github_token: False,
+        )
+        result = repo_provisioner.validate_repo_access(
+            "https://github.com/alice/private-svc",
+            github_token=None,
+        )
+        assert result.status == repo_provisioner.ACCESS_NOT_FOUND
+
+    def test_error_on_malformed_url(self):
+        """Infrastructural failures are ``error``, not ``not_found``.
+
+        The bot surfaces the error message verbatim so an admin can
+        see what went wrong without inferring it from a generic
+        not_found.
+        """
+        from delulu_sandbox_modal import repo_provisioner
+
+        result = repo_provisioner.validate_repo_access("not-a-url")
+        assert result.status == repo_provisioner.ACCESS_ERROR
+        assert result.error
+
+
+class TestEnsureWorktreeAuth:
+    """``_ensure_worktree`` must thread ``github_token`` to its
+    ``_run_git`` calls.
+
+    Without it, ``git checkout <ref>`` and ``git worktree add ... HEAD``
+    against a ``--filter=blob:none`` bare cache lazy-fetch missing
+    blobs from the promisor remote (origin); on a private repo that
+    fetch dies with "could not read Username for 'https://github.com'"
+    the moment a missing blob has to be materialized — the exact
+    failure the user reported in the original traceback. The clone
+    and fetch already had auth (PR #72); only this last hop was
+    missed.
+    """
+
+    def test_passes_token_to_worktree_add(self, tmp_path, monkeypatch):
+        from delulu_sandbox_modal import repo_provisioner
+
+        calls: list[tuple[list[str], dict]] = []
+
+        def fake_run_git(args, *, check=True, github_token=None):
+            calls.append((list(args), {"github_token": github_token}))
+
+        monkeypatch.setattr(repo_provisioner, "_run_git", fake_run_git)
+
+        # Don't pre-create either dir — the "workspace exists?" check
+        # is False, so we hit the `worktree add` branch.
+        bare_path = str(tmp_path / "bare.git")
+        workspace_path = str(tmp_path / "ws")
+
+        repo_provisioner._ensure_worktree(
+            bare_path,
+            workspace_path,
+            "HEAD",
+            github_token="ghp_test",
+        )
+
+        worktree_add = next(c for c in calls if "add" in c[0])
+        assert worktree_add[1]["github_token"] == "ghp_test"
+
+    def test_passes_token_to_checkout(self, tmp_path, monkeypatch):
+        # Warm path — existing worktree with a .git marker → just
+        # `git checkout <ref>`. Same lazy-fetch hazard.
+        from delulu_sandbox_modal import repo_provisioner
+
+        calls: list[tuple[list[str], dict]] = []
+
+        def fake_run_git(args, *, check=True, github_token=None):
+            calls.append((list(args), {"github_token": github_token}))
+
+        monkeypatch.setattr(repo_provisioner, "_run_git", fake_run_git)
+
+        workspace_path = str(tmp_path / "ws")
+        os.makedirs(workspace_path)
+        # The .git marker file is what triggers the warm path.
+        with open(os.path.join(workspace_path, ".git"), "w") as f:
+            f.write("gitdir: ../bare.git/worktrees/ws\n")
+
+        repo_provisioner._ensure_worktree(
+            str(tmp_path / "bare.git"),
+            workspace_path,
+            "HEAD",
+            github_token="ghp_test",
+        )
+
+        checkout = next(c for c in calls if "checkout" in c[0])
+        assert checkout[1]["github_token"] == "ghp_test"
+
+    def test_no_token_passes_none(self, tmp_path, monkeypatch):
+        # Public-repo path stays unauthenticated — explicit None,
+        # not the literal string "None" or any default sentinel.
+        from delulu_sandbox_modal import repo_provisioner
+
+        calls: list[tuple[list[str], dict]] = []
+
+        def fake_run_git(args, *, check=True, github_token=None):
+            calls.append((list(args), {"github_token": github_token}))
+
+        monkeypatch.setattr(repo_provisioner, "_run_git", fake_run_git)
+
+        repo_provisioner._ensure_worktree(
+            str(tmp_path / "bare.git"),
+            str(tmp_path / "ws"),
+            "HEAD",
+        )
+
+        worktree_add = next(c for c in calls if "add" in c[0])
+        assert worktree_add[1]["github_token"] is None

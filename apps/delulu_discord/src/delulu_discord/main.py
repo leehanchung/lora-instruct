@@ -55,6 +55,7 @@ def create_bot(settings: Settings) -> discord.Client:
         session_manager=session_manager,
         dispatcher=dispatcher,
         repo_config=repo_config,
+        repo_allowlist=repo_allowlist,
     )
 
     register_slash_commands(
