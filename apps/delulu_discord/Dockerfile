@@ -13,5 +13,12 @@ COPY pyproject.toml uv.lock .python-version ./
 COPY src/ src/
 RUN uv pip install --system .
 
+# Persistent state directory. The Makefile's ``restart`` target
+# mounts the named Docker volume ``disco-data`` here so the bot's
+# SQLite session DB (``/data/sessions.db``) survives ``docker rm``.
+# Creating the dir at build time means the bot starts cleanly even
+# on the first deploy before the volume has any contents.
+RUN mkdir -p /data
+
 # The bot is lightweight — ~50MB RAM
 CMD ["python", "-m", "delulu_discord.main"]

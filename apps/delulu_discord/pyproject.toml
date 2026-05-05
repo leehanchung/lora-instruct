@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Discord bot that dispatches Claude Code tasks to Modal sandboxes"
 requires-python = ">=3.14"
 dependencies = [
+    "aiosqlite>=0.20",
     "discord.py>=2.4,<3",
     "modal>=1.0",
     "pydantic>=2.0,<3",
