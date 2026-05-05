@@ -255,18 +255,26 @@ jobs:
           echo "auth.json: persisted refreshed copy to droplet"
 
       - name: Submit review
-        # Only run if the Run Codex step produced a non-empty
-        # output file. ``hashFiles`` returns '' when the file is
-        # missing or zero-byte, so this naturally skips when codex
-        # exec failed or wrote nothing.
-        if: >-
-          steps.run_codex.outputs.output-file != ''
-          && hashFiles(steps.run_codex.outputs.output-file) != ''
+        # `success()` (the default if:) ensures we only run when
+        # Run Codex itself succeeded; the path check filters out
+        # the case where the previous step somehow ran but didn't
+        # set the output. Cannot use `hashFiles()` here because it
+        # only sees files under $GITHUB_WORKSPACE — and our output
+        # lives under $RUNNER_TEMP. (Codex's own review of the
+        # previous push caught this exact bug — thanks codex.) The
+        # zero-byte / missing-file case is handled with `test -s`
+        # inside the step body instead.
+        if: steps.run_codex.outputs.output-file != ''
         env:
           CODEX_OUTPUT_FILE: ${{ steps.run_codex.outputs.output-file }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+
+          if [ ! -s "$CODEX_OUTPUT_FILE" ]; then
+            echo "Codex output file is missing or empty; nothing to submit"
+            exit 0
+          fi
 
           # Read directly from the file — never round-trips through
           # $GITHUB_OUTPUT, so no delimiter-collision risk regardless
