@@ -201,15 +201,16 @@ jobs:
             --output-last-message "$OUT_FILE" \
             "$PROMPT"
 
-          # Promote the file contents to a step output. Multi-line
-          # outputs require the heredoc-style delimiter pattern —
-          # without it, a newline in the message would corrupt the
-          # GITHUB_OUTPUT file format.
-          {
-            echo "final-message<<__CODEX_EOF__"
-            cat "$OUT_FILE"
-            echo "__CODEX_EOF__"
-          } >> "$GITHUB_OUTPUT"
+          # Hand the result to the Submit step via the file on
+          # $RUNNER_TEMP (which persists across steps in the same
+          # job). Don't push the message text through $GITHUB_OUTPUT:
+          # a previous attempt used a heredoc delimiter and broke
+          # with "Unable to process file command 'output'" — Codex
+          # was reviewing THIS workflow file and quoted the literal
+          # delimiter back in its review, closing the heredoc
+          # mid-content. The file path is constant + private to the
+          # runner; the next step reads it directly.
+          echo "output-file=$OUT_FILE" >> "$GITHUB_OUTPUT"
 
       - name: Persist refreshed auth.json back to droplet
         # `if: always()` so we still upload a refresh even when codex
@@ -254,17 +255,35 @@ jobs:
           echo "auth.json: persisted refreshed copy to droplet"
 
       - name: Submit review
-        if: steps.run_codex.outputs.final-message != ''
+        # Only run if the Run Codex step produced a non-empty
+        # output file. ``hashFiles`` returns '' when the file is
+        # missing or zero-byte, so this naturally skips when codex
+        # exec failed or wrote nothing.
+        if: >-
+          steps.run_codex.outputs.output-file != ''
+          && hashFiles(steps.run_codex.outputs.output-file) != ''
         env:
-          CODEX_MESSAGE: ${{ steps.run_codex.outputs.final-message }}
+          CODEX_OUTPUT_FILE: ${{ steps.run_codex.outputs.output-file }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+
+          # Read directly from the file — never round-trips through
+          # $GITHUB_OUTPUT, so no delimiter-collision risk regardless
+          # of what Codex emits.
+          CODEX_MESSAGE=$(cat "$CODEX_OUTPUT_FILE")
+
           if echo "$CODEX_MESSAGE" | grep -q "^VERDICT: APPROVE"; then
             EVENT="APPROVE"
           else
             EVENT="COMMENT"
           fi
           BODY=$(echo "$CODEX_MESSAGE" | sed '/^VERDICT: /d')
+
+          # gh api accepts -F field=@file for body content; using -f
+          # with a shell var is fine here because we control the
+          # variable expansion via bash quoting (the var is set from
+          # `cat` and never re-interpreted).
           gh api \
             "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews" \
             --method POST \
