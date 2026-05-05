@@ -1,0 +1,300 @@
+name: Codex Code Review
+
+# Reviews each PR via the OpenAI Codex CLI authenticated against the
+# repo owner's ChatGPT account (NOT an OPENAI_API_KEY). Cost lives on
+# the ChatGPT plan rather than per-token API billing.
+#
+# Auth lifecycle (see prd/codex-ci-auth.md for the full design):
+#
+#   1. The repo owner runs `codex login` once on a trusted local
+#      machine. This produces ~/.codex/auth.json — an OAuth bundle
+#      that Codex auto-refreshes (~8-day window, plus on-401 retry).
+#
+#   2. The contents of auth.json are stored in the GitHub secret
+#      CODEX_AUTH_JSON. This secret is the *seed* — used only when
+#      the durable copy on the droplet is missing or unreachable.
+#
+#   3. The durable copy lives at /root/.codex-ci/auth.json on the
+#      DigitalOcean droplet that already hosts the delulu bot
+#      container (same DROPLET_HOST / DROPLET_SSH_KEY secrets the
+#      delulu-discord-deploy job uses). On every CI run we scp the
+#      file down before invoking codex and scp it back up after,
+#      so any token refresh codex performed during the run lands
+#      back on the durable copy.
+#
+#   4. The job's concurrency.group is "codex-auth" with
+#      cancel-in-progress: false — only one Codex job runs at a time
+#      across the whole repo, so two simultaneous auth.json writers
+#      can't corrupt each other. The trade-off is that rapid PR
+#      pushes serialize instead of cancel; for a one-user repo
+#      that's the right call.
+#
+# Failure mode escalation:
+#
+#   - Droplet unreachable on entry  → fall back to CODEX_AUTH_JSON
+#     seed for this run; persist back will retry on the next run.
+#   - codex auth fails (expired token, etc.) → re-run `codex login`
+#     locally and overwrite the GitHub secret. The next run will
+#     reseed the droplet from the fresh secret.
+#   - Persist back fails → the job FAILS LOUDLY (no `|| true`).
+#     Silent persist failure is what the PRD §"Risks: token drift"
+#     warns against — better to fail one PR and notice than ship a
+#     broken seed for weeks.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Workflow-level: serialize across the whole repo so the auth.json
+# read-modify-write on the droplet is single-writer. Per-PR cancel
+# semantics are sacrificed for auth safety — a noisy PR queue is
+# fine; a clobbered auth.json takes a manual `codex login` to fix.
+concurrency:
+  group: codex-auth
+  cancel-in-progress: false
+
+jobs:
+  review:
+    name: Codex PR review
+    if: >-
+      github.event.pull_request.draft == false
+      && github.event.pull_request.user.login != 'claude[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      # Centralize the path so every step references the same file.
+      # CODEX_HOME is what the codex CLI actually consults — putting
+      # it on $GITHUB_ENV via this top-level env block exports it to
+      # every step automatically.
+      CODEX_HOME: ${{ github.workspace }}/.codex-home
+      AUTH_JSON_PATH: ${{ github.workspace }}/.codex-home/auth.json
+      DROPLET_AUTH_PATH: /root/.codex-ci/auth.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+
+      - name: Pre-fetch base and head refs
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          git fetch --no-tags origin \
+            "$PR_BASE_REF" \
+            "+refs/pull/$PR_NUMBER/head"
+
+      - name: Set up SSH key for droplet
+        env:
+          DROPLET_HOST: ${{ secrets.DROPLET_HOST }}
+          DROPLET_SSH_KEY: ${{ secrets.DROPLET_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          # No `set -x` anywhere in this job — leaks would echo the
+          # SSH key or auth.json into runner logs.
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$DROPLET_SSH_KEY" > ~/.ssh/codex_droplet
+          chmod 600 ~/.ssh/codex_droplet
+
+          # Trust the droplet's host key on first contact. Without
+          # this, scp/ssh would refuse the connection on a fresh
+          # runner. ssh-keyscan is read-only so it's safe to do
+          # unconditionally.
+          ssh-keyscan -H "$DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Restore auth.json (droplet → fallback to secret seed)
+        env:
+          DROPLET_HOST: ${{ secrets.DROPLET_HOST }}
+          # The secret is only read if the droplet copy is missing.
+          # On a healthy steady state this branch is taken once at
+          # bootstrap and never again.
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$CODEX_HOME"
+          chmod 700 "$CODEX_HOME"
+
+          # Try the durable droplet copy first. `scp -q` suppresses
+          # progress chatter; the `&& echo`/`|| echo` lines are the
+          # only signal we surface to logs (no token bytes ever).
+          if scp -q \
+              -i ~/.ssh/codex_droplet \
+              -o StrictHostKeyChecking=yes \
+              "root@${DROPLET_HOST}:${DROPLET_AUTH_PATH}" \
+              "$AUTH_JSON_PATH" 2>/dev/null; then
+            echo "auth.json: restored from droplet"
+          else
+            # Bootstrap path: droplet doesn't have a copy yet (first
+            # ever run) or scp failed. Seed from the GitHub secret.
+            # `printf '%s'` is safer than `echo` — no trailing
+            # newline ambiguity, no backslash interpretation.
+            if [ -z "${CODEX_AUTH_JSON:-}" ]; then
+              echo "::error::Droplet copy unreachable AND CODEX_AUTH_JSON secret is empty. Run 'codex login' locally and store the resulting ~/.codex/auth.json as the CODEX_AUTH_JSON repo secret."
+              exit 1
+            fi
+            printf '%s' "$CODEX_AUTH_JSON" > "$AUTH_JSON_PATH"
+            echo "auth.json: seeded from CODEX_AUTH_JSON secret (droplet copy missing)"
+          fi
+
+          chmod 600 "$AUTH_JSON_PATH"
+
+      - name: Install Codex CLI
+        # Pin to a specific version so a breaking upstream release
+        # can't silently change auth or output formats. Bump
+        # deliberately when reviewing the codex changelog.
+        # 0.59.0 was too old for the gpt-5.4+ models under
+        # ChatGPT-account auth ("requires a newer version of
+        # Codex"); 0.128.0 is the current stable.
+        run: npm install -g @openai/codex@0.128.0
+
+      - name: Run Codex
+        id: run_codex
+        env:
+          PROMPT: |
+            This is PR #${{ github.event.pull_request.number }} for ${{ github.repository }}.
+
+            Review ONLY the changes introduced by the PR, so consider:
+               git log --oneline ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}
+
+            Suggest any improvements, potential bugs, or issues.
+            Be concise and specific in your feedback.
+
+            Pull request title and body:
+            ----
+            ${{ github.event.pull_request.title }}
+            ${{ github.event.pull_request.body }}
+
+            IMPORTANT: End your response with exactly one of these on its
+            own line:
+            VERDICT: APPROVE
+            VERDICT: COMMENT
+
+            Use APPROVE if the code looks good with no substantive issues.
+            Use COMMENT if you found issues worth addressing.
+        run: |
+          set -euo pipefail
+
+          OUT_FILE="$RUNNER_TEMP/codex-output.txt"
+
+          # CODEX_HOME comes from the workflow-level env block.
+          # `--skip-git-repo-check` matches the prior openai/codex-
+          # action behavior; `--sandbox workspace-write` lets codex
+          # write its scratch dirs but blocks network/filesystem
+          # escape. Output goes to a file so we can hand it to the
+          # Submit step without quoting drama.
+          #
+          # `gpt-5.5` is the current ChatGPT-account default (per
+          # https://developers.openai.com/codex/models). The CLI's
+          # auto-default can land on API-key-only models (we hit
+          # `gpt-5.1-codex-max` and `gpt-5-codex` rejections under
+          # account auth on the way here), so the explicit pin is
+          # load-bearing. Avoid `gpt-5.3-codex*` — known flaky on
+          # ChatGPT auth (codex#14181, #14306).
+          codex exec \
+            --skip-git-repo-check \
+            --sandbox workspace-write \
+            --model gpt-5.5 \
+            --output-last-message "$OUT_FILE" \
+            "$PROMPT"
+
+          # Hand the result to the Submit step via the file on
+          # $RUNNER_TEMP (which persists across steps in the same
+          # job). Don't push the message text through $GITHUB_OUTPUT:
+          # a previous attempt used a heredoc delimiter and broke
+          # with "Unable to process file command 'output'" — Codex
+          # was reviewing THIS workflow file and quoted the literal
+          # delimiter back in its review, closing the heredoc
+          # mid-content. The file path is constant + private to the
+          # runner; the next step reads it directly.
+          echo "output-file=$OUT_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Persist refreshed auth.json back to droplet
+        # `if: always()` so we still upload a refresh even when codex
+        # exec errors mid-run — the refresh might be the very thing
+        # that would unbreak the next run.
+        if: always()
+        env:
+          DROPLET_HOST: ${{ secrets.DROPLET_HOST }}
+        run: |
+          set -euo pipefail
+
+          # Skip if the file disappeared (e.g. the restore step
+          # itself failed before writing it). Nothing to persist.
+          if [ ! -f "$AUTH_JSON_PATH" ]; then
+            echo "auth.json: nothing to persist (file missing)"
+            exit 0
+          fi
+
+          # Ensure the destination directory exists with the right
+          # mode. Idempotent — `mkdir -p` is a no-op if it's already
+          # there.
+          ssh \
+            -i ~/.ssh/codex_droplet \
+            -o StrictHostKeyChecking=yes \
+            "root@${DROPLET_HOST}" \
+            "mkdir -p /root/.codex-ci && chmod 700 /root/.codex-ci"
+
+          scp -q \
+            -i ~/.ssh/codex_droplet \
+            -o StrictHostKeyChecking=yes \
+            "$AUTH_JSON_PATH" \
+            "root@${DROPLET_HOST}:${DROPLET_AUTH_PATH}"
+
+          # Tighten the mode on the durable copy too — scp preserves
+          # the source mode, but belt-and-suspenders.
+          ssh \
+            -i ~/.ssh/codex_droplet \
+            -o StrictHostKeyChecking=yes \
+            "root@${DROPLET_HOST}" \
+            "chmod 600 ${DROPLET_AUTH_PATH}"
+
+          echo "auth.json: persisted refreshed copy to droplet"
+
+      - name: Submit review
+        # `success()` (the default if:) ensures we only run when
+        # Run Codex itself succeeded; the path check filters out
+        # the case where the previous step somehow ran but didn't
+        # set the output. Cannot use `hashFiles()` here because it
+        # only sees files under $GITHUB_WORKSPACE — and our output
+        # lives under $RUNNER_TEMP. (Codex's own review of the
+        # previous push caught this exact bug — thanks codex.) The
+        # zero-byte / missing-file case is handled with `test -s`
+        # inside the step body instead.
+        if: steps.run_codex.outputs.output-file != ''
+        env:
+          CODEX_OUTPUT_FILE: ${{ steps.run_codex.outputs.output-file }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -s "$CODEX_OUTPUT_FILE" ]; then
+            echo "Codex output file is missing or empty; nothing to submit"
+            exit 0
+          fi
+
+          # Read directly from the file — never round-trips through
+          # $GITHUB_OUTPUT, so no delimiter-collision risk regardless
+          # of what Codex emits.
+          CODEX_MESSAGE=$(cat "$CODEX_OUTPUT_FILE")
+
+          if echo "$CODEX_MESSAGE" | grep -q "^VERDICT: APPROVE"; then
+            EVENT="APPROVE"
+          else
+            EVENT="COMMENT"
+          fi
+          BODY=$(echo "$CODEX_MESSAGE" | sed '/^VERDICT: /d')
+
+          # gh api accepts -F field=@file for body content; using -f
+          # with a shell var is fine here because we control the
+          # variable expansion via bash quoting (the var is set from
+          # `cat` and never re-interpreted).
+          gh api \
+            "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews" \
+            --method POST \
+            -f event="$EVENT" \
+            -f body="$BODY" \
+            --jq '.html_url'
