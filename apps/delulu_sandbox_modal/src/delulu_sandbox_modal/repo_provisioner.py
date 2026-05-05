@@ -131,7 +131,7 @@ def provision_workspace(
 
     # Create (or replace) the per-thread worktree.
     worktree_start = time.monotonic()
-    _ensure_worktree(bare_path, workspace_path, ref)
+    _ensure_worktree(bare_path, workspace_path, ref, github_token=github_token)
     timings.worktree_ms = _elapsed_ms(worktree_start)
 
     # Record the marker so the next provision on the same thread
@@ -254,7 +254,13 @@ def _fetch_bare(bare_path: str, ref: str, *, github_token: str | None = None) ->
     )
 
 
-def _ensure_worktree(bare_path: str, workspace_path: str, ref: str) -> None:
+def _ensure_worktree(
+    bare_path: str,
+    workspace_path: str,
+    ref: str,
+    *,
+    github_token: str | None = None,
+) -> None:
     """Create or reuse a worktree at ``workspace_path`` checked out at ``ref``.
 
     Handles three cases:
@@ -268,6 +274,14 @@ def _ensure_worktree(bare_path: str, workspace_path: str, ref: str) -> None:
 
     Prunes stale worktree registrations first so the bare cache's
     ``worktrees/`` dir doesn't accumulate dead entries.
+
+    ``github_token`` authenticates the lazy blob fetches that
+    ``git checkout`` and ``git worktree add`` trigger against the
+    bare cache's promisor remote (origin) — without it, private-repo
+    worktrees fail with "could not read Username for
+    'https://github.com'" the moment a missing blob has to be
+    materialized. ``git worktree prune`` is local-only and doesn't
+    need the token.
     """
     # Prune any dead worktree registrations cheaply.
     _run_git(["-C", bare_path, "worktree", "prune"], check=False)
@@ -276,7 +290,7 @@ def _ensure_worktree(bare_path: str, workspace_path: str, ref: str) -> None:
         git_marker = os.path.join(workspace_path, ".git")
         if os.path.exists(git_marker):
             # Valid worktree — just checkout the ref.
-            _run_git(["-C", workspace_path, "checkout", ref])
+            _run_git(["-C", workspace_path, "checkout", ref], github_token=github_token)
             return
         # Exists but not a worktree. Wipe and recreate below.
         shutil.rmtree(workspace_path)
@@ -291,7 +305,8 @@ def _ensure_worktree(bare_path: str, workspace_path: str, ref: str) -> None:
             "--force",
             workspace_path,
             ref,
-        ]
+        ],
+        github_token=github_token,
     )
 
 

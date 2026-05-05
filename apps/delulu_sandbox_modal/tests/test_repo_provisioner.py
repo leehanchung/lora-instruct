@@ -539,3 +539,92 @@ class TestValidateRepoAccess:
         result = repo_provisioner.validate_repo_access("not-a-url")
         assert result.status == repo_provisioner.ACCESS_ERROR
         assert result.error
+
+
+class TestEnsureWorktreeAuth:
+    """``_ensure_worktree`` must thread ``github_token`` to its
+    ``_run_git`` calls.
+
+    Without it, ``git checkout <ref>`` and ``git worktree add ... HEAD``
+    against a ``--filter=blob:none`` bare cache lazy-fetch missing
+    blobs from the promisor remote (origin); on a private repo that
+    fetch dies with "could not read Username for 'https://github.com'"
+    the moment a missing blob has to be materialized — the exact
+    failure the user reported in the original traceback. The clone
+    and fetch already had auth (PR #72); only this last hop was
+    missed.
+    """
+
+    def test_passes_token_to_worktree_add(self, tmp_path, monkeypatch):
+        from delulu_sandbox_modal import repo_provisioner
+
+        calls: list[tuple[list[str], dict]] = []
+
+        def fake_run_git(args, *, check=True, github_token=None):
+            calls.append((list(args), {"github_token": github_token}))
+
+        monkeypatch.setattr(repo_provisioner, "_run_git", fake_run_git)
+
+        # Don't pre-create either dir — the "workspace exists?" check
+        # is False, so we hit the `worktree add` branch.
+        bare_path = str(tmp_path / "bare.git")
+        workspace_path = str(tmp_path / "ws")
+
+        repo_provisioner._ensure_worktree(
+            bare_path,
+            workspace_path,
+            "HEAD",
+            github_token="ghp_test",
+        )
+
+        worktree_add = next(c for c in calls if "add" in c[0])
+        assert worktree_add[1]["github_token"] == "ghp_test"
+
+    def test_passes_token_to_checkout(self, tmp_path, monkeypatch):
+        # Warm path — existing worktree with a .git marker → just
+        # `git checkout <ref>`. Same lazy-fetch hazard.
+        from delulu_sandbox_modal import repo_provisioner
+
+        calls: list[tuple[list[str], dict]] = []
+
+        def fake_run_git(args, *, check=True, github_token=None):
+            calls.append((list(args), {"github_token": github_token}))
+
+        monkeypatch.setattr(repo_provisioner, "_run_git", fake_run_git)
+
+        workspace_path = str(tmp_path / "ws")
+        os.makedirs(workspace_path)
+        # The .git marker file is what triggers the warm path.
+        with open(os.path.join(workspace_path, ".git"), "w") as f:
+            f.write("gitdir: ../bare.git/worktrees/ws\n")
+
+        repo_provisioner._ensure_worktree(
+            str(tmp_path / "bare.git"),
+            workspace_path,
+            "HEAD",
+            github_token="ghp_test",
+        )
+
+        checkout = next(c for c in calls if "checkout" in c[0])
+        assert checkout[1]["github_token"] == "ghp_test"
+
+    def test_no_token_passes_none(self, tmp_path, monkeypatch):
+        # Public-repo path stays unauthenticated — explicit None,
+        # not the literal string "None" or any default sentinel.
+        from delulu_sandbox_modal import repo_provisioner
+
+        calls: list[tuple[list[str], dict]] = []
+
+        def fake_run_git(args, *, check=True, github_token=None):
+            calls.append((list(args), {"github_token": github_token}))
+
+        monkeypatch.setattr(repo_provisioner, "_run_git", fake_run_git)
+
+        repo_provisioner._ensure_worktree(
+            str(tmp_path / "bare.git"),
+            str(tmp_path / "ws"),
+            "HEAD",
+        )
+
+        worktree_add = next(c for c in calls if "add" in c[0])
+        assert worktree_add[1]["github_token"] is None
