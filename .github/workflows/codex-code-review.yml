@@ -182,10 +182,8 @@ jobs:
 
           # CODEX_HOME comes from the workflow-level env block.
           # `--skip-git-repo-check` matches the prior openai/codex-
-          # action behavior; `--sandbox workspace-write` lets codex
-          # write its scratch dirs but blocks network/filesystem
-          # escape. Output goes to a file so we can hand it to the
-          # Submit step without quoting drama.
+          # action behavior. Output goes to a file so we can hand
+          # it to the Submit step without quoting drama.
           #
           # `gpt-5.5` is the current ChatGPT-account default (per
           # https://developers.openai.com/codex/models). The CLI's
@@ -194,9 +192,24 @@ jobs:
           # account auth on the way here), so the explicit pin is
           # load-bearing. Avoid `gpt-5.3-codex*` — known flaky on
           # ChatGPT auth (codex#14181, #14306).
+          #
+          # `--sandbox danger-full-access` disables codex's own
+          # bubblewrap sandbox. Justification: the GitHub-Actions
+          # runner is itself an ephemeral, single-use VM, so
+          # codex's sandbox adds no extra safety here — and
+          # actively hurts: bubblewrap isn't on PATH and the
+          # vendored fallback can't set up network namespaces
+          # inside the runner's already-unprivileged container,
+          # so codex was falling back to its GitHub MCP + web
+          # search to read the diff over the network instead of
+          # using local `git`. That works but burns extra tokens
+          # on every review. Disable the sandbox so codex shells
+          # out to git/cat/etc. directly. (Do NOT copy this flag
+          # into a non-CI invocation — it's only safe because the
+          # runner itself is the sandbox.)
           codex exec \
             --skip-git-repo-check \
-            --sandbox workspace-write \
+            --sandbox danger-full-access \
             --model gpt-5.5 \
             --output-last-message "$OUT_FILE" \
             "$PROMPT"
@@ -271,7 +284,12 @@ jobs:
         # key server-side, we hold ours in repo secrets.
         if: steps.run_codex.outputs.output-file != ''
         id: app_token
-        uses: actions/create-github-app-token@v1
+        # Pinned to a full commit SHA (per supply-chain hygiene for
+        # an action that handles a long-lived signing key). The
+        # trailing comment records the human-readable version we
+        # resolved from. Bump deliberately when reviewing the
+        # action's changelog. SHA below is `v1` as of 2026-05-06.
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1
         with:
           app-id: ${{ secrets.CODEX_APP_ID }}
           private-key: ${{ secrets.CODEX_APP_PRIVATE_KEY }}
