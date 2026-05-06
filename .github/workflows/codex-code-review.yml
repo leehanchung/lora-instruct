@@ -142,6 +142,22 @@ jobs:
 
           chmod 600 "$AUTH_JSON_PATH"
 
+      - name: Install bubblewrap (codex sandbox)
+        # Codex's `--sandbox workspace-write` mode shells out to
+        # bubblewrap to isolate file access during exec. The
+        # ubuntu-latest runner image doesn't ship it; the codex CLI
+        # falls back to a vendored copy that can't always set up
+        # network namespaces inside the runner's already-
+        # unprivileged container. When the fallback fails, codex
+        # silently degrades to its GitHub-MCP + web-search tools to
+        # read the diff over the network — works, but burns extra
+        # tokens on every review and clutters the run log. The
+        # apt package is the cheapest way to get a working
+        # sandbox; if it still can't set up namespaces in your
+        # runner environment, the MCP fallback path remains as a
+        # safety net.
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap
+
       - name: Install Codex CLI
         # Pin to a specific version so a breaking upstream release
         # can't silently change auth or output formats. Bump
@@ -193,23 +209,34 @@ jobs:
           # load-bearing. Avoid `gpt-5.3-codex*` — known flaky on
           # ChatGPT auth (codex#14181, #14306).
           #
-          # `--sandbox danger-full-access` disables codex's own
-          # bubblewrap sandbox. Justification: the GitHub-Actions
-          # runner is itself an ephemeral, single-use VM, so
-          # codex's sandbox adds no extra safety here — and
-          # actively hurts: bubblewrap isn't on PATH and the
-          # vendored fallback can't set up network namespaces
-          # inside the runner's already-unprivileged container,
-          # so codex was falling back to its GitHub MCP + web
+          # `--sandbox workspace-write` is load-bearing for
+          # security. Codex is reviewing untrusted PR content
+          # (title/body/diff) and is susceptible to prompt
+          # injection. By the time this step runs we have two
+          # sensitive files on disk:
+          #   - $CODEX_HOME/auth.json     (ChatGPT OAuth bundle)
+          #   - ~/.ssh/codex_droplet      (root SSH to the delulu
+          #                               droplet)
+          # An attacker-supplied PR that successfully injected
+          # codex could read either and exfiltrate via codex's
+          # network access. The sandbox blocks reads outside the
+          # workspace and is the primary defense — the runner
+          # being ephemeral does not protect secrets that exist
+          # on disk during the job.
+          #
+          # Trade-off accepted: bubblewrap isn't on the runner
+          # image and the vendored fallback can't set up network
+          # namespaces inside the runner's already-unprivileged
+          # container. Codex falls back to its GitHub MCP + web
           # search to read the diff over the network instead of
-          # using local `git`. That works but burns extra tokens
-          # on every review. Disable the sandbox so codex shells
-          # out to git/cat/etc. directly. (Do NOT copy this flag
-          # into a non-CI invocation — it's only safe because the
-          # runner itself is the sandbox.)
+          # using local `git`. That burns some extra tokens per
+          # review but keeps the sandbox honest. (A previous
+          # commit tried `--sandbox danger-full-access` to save
+          # tokens; codex itself reviewed that commit and called
+          # out the credential-exfiltration risk — reverted.)
           codex exec \
             --skip-git-repo-check \
-            --sandbox danger-full-access \
+            --sandbox workspace-write \
             --model gpt-5.5 \
             --output-last-message "$OUT_FILE" \
             "$PROMPT"
@@ -282,7 +309,11 @@ jobs:
         # Same shape Anthropic's claude-code-action uses, minus the
         # OIDC-exchange round trip — they hold the App's private
         # key server-side, we hold ours in repo secrets.
-        if: steps.run_codex.outputs.output-file != ''
+        #
+        # Explicit `success() &&` is load-bearing: a custom `if:`
+        # drops the implicit success() guard, so without it this
+        # would still run after a previous-step failure.
+        if: success() && steps.run_codex.outputs.output-file != ''
         id: app_token
         # Pinned to a full commit SHA (per supply-chain hygiene for
         # an action that handles a long-lived signing key). The
@@ -295,16 +326,30 @@ jobs:
           private-key: ${{ secrets.CODEX_APP_PRIVATE_KEY }}
 
       - name: Submit review
-        # `success()` (the default if:) ensures we only run when
-        # Run Codex itself succeeded; the path check filters out
-        # the case where the previous step somehow ran but didn't
-        # set the output. Cannot use `hashFiles()` here because it
-        # only sees files under $GITHUB_WORKSPACE — and our output
-        # lives under $RUNNER_TEMP. (Codex's own review of the
-        # previous push caught this exact bug — thanks codex.) The
-        # zero-byte / missing-file case is handled with `test -s`
-        # inside the step body instead.
-        if: steps.run_codex.outputs.output-file != ''
+        # Custom `if:` expressions DROP the implicit success()
+        # guard, so we re-add it explicitly — without it, this
+        # step would run with an empty GH_TOKEN even when the
+        # Mint step above failed (secrets missing, App not
+        # installed, GitHub App API hiccup), masking the real
+        # failure as an opaque 401 from `gh api`.
+        #
+        # The conclusion check on app_token catches the case where
+        # the action ran but didn't produce a token (e.g. private
+        # key parsing succeeded but installation token request
+        # came back malformed). Belt-and-suspenders to a real
+        # auth failure visible in the step log.
+        #
+        # Cannot use `hashFiles()` for the codex-output check
+        # because it only sees files under $GITHUB_WORKSPACE — our
+        # output lives under $RUNNER_TEMP. The zero-byte / missing-
+        # file case is handled with `test -s` inside the step body
+        # instead. (Codex's own review of an earlier push caught
+        # the original hashFiles bug — thanks codex.)
+        if: >-
+          success()
+          && steps.run_codex.outputs.output-file != ''
+          && steps.app_token.conclusion == 'success'
+          && steps.app_token.outputs.token != ''
         env:
           CODEX_OUTPUT_FILE: ${{ steps.run_codex.outputs.output-file }}
           # Use the App's installation token, not github.token, so
