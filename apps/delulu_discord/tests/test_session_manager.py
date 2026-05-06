@@ -26,7 +26,10 @@ from pathlib import Path
 import pytest
 
 from delulu_discord.session_manager import (
+    JANITOR_MAX_AGE_DAYS,
     SCHEMA_VERSION,
+    SCHEMA_VERSION_KEY,
+    TOUCH_DEBOUNCE_SECONDS,
     Session,
     SessionManager,
     _row_to_session,
@@ -42,6 +45,25 @@ async def sm(tmp_path: Path):
         yield manager
     finally:
         await manager.close()
+
+
+async def _backdate(manager: SessionManager, thread_id: int, seconds_ago: float) -> float:
+    """Push ``last_active_at`` for ``thread_id`` ``seconds_ago`` into the past.
+
+    Returns the new ``last_active_at`` so callers can assert exact
+    bumps. Reaches into ``manager._conn`` rather than going through
+    a public method because there's no public way to backdate, and
+    a real test against the time clock would be flaky.
+    """
+    conn = manager._conn
+    assert conn is not None
+    backdated = time.time() - seconds_ago
+    await conn.execute(
+        "UPDATE sessions SET last_active_at = ? WHERE thread_id = ?",
+        (backdated, thread_id),
+    )
+    await conn.commit()
+    return backdated
 
 
 class TestLifecycle:
@@ -87,7 +109,7 @@ class TestLifecycle:
             assert conn is not None
             async with conn.execute(
                 "SELECT value FROM schema_meta WHERE key = ?",
-                ("schema_version",),
+                (SCHEMA_VERSION_KEY,),
             ) as cursor:
                 row = await cursor.fetchone()
             assert row is not None
@@ -191,37 +213,50 @@ class TestTTLExpiry:
         await manager.connect()
         try:
             await manager.create_session(thread_id=1, repo_url="x")
-            # Backdate last_active_at so it's outside the 1s TTL.
-            conn = manager._conn
-            assert conn is not None
-            await conn.execute(
-                "UPDATE sessions SET last_active_at = ? WHERE thread_id = ?",
-                (time.time() - 10, 1),
-            )
-            await conn.commit()
-
+            await _backdate(manager, 1, seconds_ago=10)
             assert await manager.get_session(1) is None
         finally:
             await manager.close()
 
     async def test_get_session_bumps_last_active(self, sm: SessionManager):
-        # Hot-thread protection: any reply in a thread should reset
-        # the TTL clock so a long conversation doesn't get cut off
-        # mid-flight.
+        # Hot-thread protection: a reply in a thread that's been
+        # idle longer than TOUCH_DEBOUNCE_SECONDS resets the TTL
+        # clock so a long conversation doesn't get cut off
+        # mid-flight. Backdate well past the debounce window so the
+        # bump-path runs (the recently-touched path is exercised by
+        # test_get_session_skips_bump_within_debounce below).
         await sm.create_session(thread_id=1, repo_url="x")
-        # Backdate enough to register but stay within TTL (3600s).
-        conn = sm._conn
-        assert conn is not None
-        backdated = time.time() - 100
-        await conn.execute(
-            "UPDATE sessions SET last_active_at = ? WHERE thread_id = ?",
-            (backdated, 1),
-        )
-        await conn.commit()
+        backdated = await _backdate(sm, 1, seconds_ago=TOUCH_DEBOUNCE_SECONDS + 5)
 
         got = await sm.get_session(1)
         assert got is not None
         assert got.last_active_at > backdated
+
+    async def test_get_session_skips_bump_within_debounce(self, sm: SessionManager):
+        # Within the debounce window, get_session must NOT issue an
+        # UPDATE. This is the load-bearing perf win: the bot's hot
+        # path (every Discord message) does a SELECT only — no
+        # writer lock, no commit, no fsync.
+        await sm.create_session(thread_id=1, repo_url="x")
+        # Half-way into the debounce window: still "recent."
+        backdated = await _backdate(sm, 1, seconds_ago=TOUCH_DEBOUNCE_SECONDS / 2)
+
+        await sm.get_session(1)
+
+        # Re-read the persisted row directly; it must still hold the
+        # backdated value (no UPDATE issued). In-memory copies on
+        # the returned dataclass are allowed to bump — the test
+        # above covers that — what we're asserting here is that the
+        # *DB* didn't get touched.
+        conn = sm._conn
+        assert conn is not None
+        async with conn.execute(
+            "SELECT last_active_at FROM sessions WHERE thread_id = ?",
+            (1,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        assert row is not None
+        assert row[0] == pytest.approx(backdated, abs=1e-3)
 
 
 class TestGetOrCreate:
@@ -250,14 +285,7 @@ class TestGetOrCreate:
                 ref="release-1.4",
                 is_private=True,
             )
-            # Backdate to force expiry.
-            conn = manager._conn
-            assert conn is not None
-            await conn.execute(
-                "UPDATE sessions SET last_active_at = ? WHERE thread_id = ?",
-                (time.time() - 10, 1),
-            )
-            await conn.commit()
+            await _backdate(manager, 1, seconds_ago=10)
 
             new_session, is_new = await manager.get_or_create(1)
             assert is_new is True
@@ -283,13 +311,7 @@ class TestGetOrCreate:
                 ref="dev",
                 is_private=False,
             )
-            conn = first._conn
-            assert conn is not None
-            await conn.execute(
-                "UPDATE sessions SET last_active_at = ? WHERE thread_id = ?",
-                (time.time() - 10, 7),
-            )
-            await conn.commit()
+            await _backdate(first, 7, seconds_ago=10)
         finally:
             await first.close()
 
@@ -325,18 +347,72 @@ class TestActiveCount:
             await manager.create_session(thread_id=1)
             await manager.create_session(thread_id=2)
             await manager.create_session(thread_id=3)
-            # Backdate one outside the TTL window.
-            conn = manager._conn
-            assert conn is not None
-            await conn.execute(
-                "UPDATE sessions SET last_active_at = ? WHERE thread_id = ?",
-                (time.time() - 1000, 2),
-            )
-            await conn.commit()
+            await _backdate(manager, 2, seconds_ago=1000)
 
             assert await manager.active_count() == 2
         finally:
             await manager.close()
+
+
+class TestJanitor:
+    """Startup janitor sweeps rows older than ``JANITOR_MAX_AGE_DAYS``.
+
+    Without this, the table would grow unboundedly with every
+    Discord thread the bot has ever served. Sweeping at connect()
+    keeps the lifecycle predictable (no background task) and bounds
+    the table to roughly the last 30 days of active threads.
+    """
+
+    async def test_sweeps_rows_older_than_max_age(self, tmp_path: Path):
+        db = tmp_path / "s.db"
+
+        # First connect: seed two rows, one well past JANITOR_MAX_AGE_DAYS
+        # and one fresh. Reset both backdates *after* create_session so
+        # they survive the seed-time touch.
+        first = SessionManager(db_path=db, ttl_seconds=3600)
+        await first.connect()
+        try:
+            await first.create_session(thread_id=100, repo_url="stale")
+            await first.create_session(thread_id=200, repo_url="fresh")
+            await _backdate(
+                first,
+                100,
+                seconds_ago=(JANITOR_MAX_AGE_DAYS + 1) * 86400,
+            )
+        finally:
+            await first.close()
+
+        # Second connect runs the janitor on the seeded DB. The stale
+        # row must be gone; the fresh row must be untouched.
+        second = SessionManager(db_path=db, ttl_seconds=3600)
+        await second.connect()
+        try:
+            assert await second.get_session(100) is None
+            fresh = await second.get_session(200)
+            assert fresh is not None
+            assert fresh.repo_url == "fresh"
+        finally:
+            await second.close()
+
+    async def test_no_sweep_keeps_recent_rows(self, tmp_path: Path):
+        # Sanity check: a connect that finds nothing to sweep must
+        # not delete anything (and must not crash).
+        db = tmp_path / "s.db"
+        first = SessionManager(db_path=db)
+        await first.connect()
+        try:
+            await first.create_session(thread_id=1, repo_url="recent")
+        finally:
+            await first.close()
+
+        second = SessionManager(db_path=db)
+        await second.connect()
+        try:
+            got = await second.get_session(1)
+            assert got is not None
+            assert got.repo_url == "recent"
+        finally:
+            await second.close()
 
 
 class TestConcurrency:

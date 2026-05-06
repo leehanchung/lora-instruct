@@ -48,6 +48,22 @@ logger = structlog.get_logger()
 # Bumped when the schema changes in a way that requires a migration.
 # Read on connect from ``schema_meta``; new columns can branch on it.
 SCHEMA_VERSION = "1"
+SCHEMA_VERSION_KEY = "schema_version"
+
+# How recent ``last_active_at`` must be before ``get_session`` skips
+# its persistence-side touch. The bot is on a single replica with an
+# hour-long TTL, so a few seconds of drift on the persisted clock is
+# invisible across restarts; meanwhile the in-memory ``Session`` is
+# still updated, so TTL gating in this process stays exact. Trading
+# this for an UPDATE+commit on every Discord message in an active
+# thread is the load-bearing perf win in this module.
+TOUCH_DEBOUNCE_SECONDS = 60
+
+# Rows whose ``last_active_at`` is older than this on connect get
+# swept by the startup janitor. The TTL window is an hour; anything
+# 30 days idle is dead. Sweeping at connect (not on a timer) keeps
+# the lifecycle predictable without a background task.
+JANITOR_MAX_AGE_DAYS = 30
 
 # Idempotent schema. ``CREATE TABLE IF NOT EXISTS`` makes connect()
 # safe to call against a fresh DB or an existing one. Index on
@@ -148,42 +164,53 @@ class SessionManager:
     async def connect(self) -> None:
         """Open the SQLite connection and apply pragmas + schema.
 
-        Safe to call repeatedly; subsequent calls are no-ops once
-        the connection is live.
+        Idempotent. Sweeps rows older than ``JANITOR_MAX_AGE_DAYS``
+        before serving any request, so the table size stays bounded
+        without a background task.
         """
         if self._conn is not None:
             return
-        # Ensure the parent directory exists. /data is created by the
-        # Dockerfile in production; tests pass a tmp_path that already
-        # exists. Defensive mkdir is cheap and idempotent.
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
 
         conn = await aiosqlite.connect(self._db_path)
         try:
             # WAL: concurrent readers, atomic writer, robust to crash.
             # synchronous=NORMAL: durable enough for session state
-            # (losing the last few writes on a power cut is fine —
-            # we're not a bank). busy_timeout: tolerate momentary
-            # contention on the writer lock without raising.
-            await conn.execute("PRAGMA journal_mode=WAL")
-            await conn.execute("PRAGMA synchronous=NORMAL")
-            await conn.execute("PRAGMA foreign_keys=ON")
-            await conn.execute("PRAGMA busy_timeout=5000")
-            await conn.executescript(_SCHEMA_SQL)
-            # Mark schema version on first connect; INSERT OR IGNORE
-            # so a re-connect on an existing DB doesn't overwrite a
-            # version that may have been bumped by a future migration.
+            # (losing the last few writes on a power cut is fine).
+            # busy_timeout: tolerate momentary writer-lock contention.
+            await conn.executescript(
+                "PRAGMA journal_mode=WAL;"
+                "PRAGMA synchronous=NORMAL;"
+                "PRAGMA foreign_keys=ON;"
+                "PRAGMA busy_timeout=5000;" + _SCHEMA_SQL
+            )
+            # INSERT OR IGNORE so a reconnect on an existing DB
+            # doesn't clobber a version a future migration bumped.
             await conn.execute(
                 "INSERT OR IGNORE INTO schema_meta (key, value) VALUES (?, ?)",
-                ("schema_version", SCHEMA_VERSION),
+                (SCHEMA_VERSION_KEY, SCHEMA_VERSION),
             )
             await conn.commit()
+            self._conn = conn
+            await self._run_janitor()
         except Exception:
+            self._conn = None
             await conn.close()
             raise
 
-        self._conn = conn
         logger.info("session_manager.connected", db_path=str(self._db_path))
+
+    async def _run_janitor(self) -> None:
+        conn = self._require_conn()
+        cutoff = time.time() - JANITOR_MAX_AGE_DAYS * 86400
+        async with conn.execute(
+            "DELETE FROM sessions WHERE last_active_at < ?",
+            (cutoff,),
+        ) as cursor:
+            deleted = cursor.rowcount
+        await conn.commit()
+        if deleted:
+            logger.info("session_manager.janitor_swept", deleted=deleted)
 
     async def close(self) -> None:
         """Close the underlying connection. Idempotent."""
@@ -267,9 +294,12 @@ class SessionManager:
     async def get_session(self, thread_id: int) -> Session | None:
         """Return the session for ``thread_id`` if present and not expired.
 
-        On hit, bumps ``last_active_at`` to now both in the returned
-        dataclass and in the row, so an actively-used thread doesn't
-        expire mid-conversation.
+        On hit, bumps ``last_active_at`` to now — but only persists
+        the bump when the row hasn't been touched within
+        ``TOUCH_DEBOUNCE_SECONDS``. The in-memory copy is always
+        updated so TTL gating stays exact within a process; the DB
+        write is what we're throttling, since this is on the
+        every-message hot path.
         """
         row = await self._read_row(thread_id)
         if row is None:
@@ -283,15 +313,14 @@ class SessionManager:
             )
             return None
 
-        # Bump last_active_at — do it in SQL so the persistence
-        # reflects the touch, not just the in-memory copy.
-        conn = self._require_conn()
         now = time.time()
-        await conn.execute(
-            "UPDATE sessions SET last_active_at = ? WHERE thread_id = ?",
-            (now, thread_id),
-        )
-        await conn.commit()
+        if now - session.last_active_at >= TOUCH_DEBOUNCE_SECONDS:
+            conn = self._require_conn()
+            await conn.execute(
+                "UPDATE sessions SET last_active_at = ? WHERE thread_id = ?",
+                (now, thread_id),
+            )
+            await conn.commit()
         session.last_active_at = now
         return session
 

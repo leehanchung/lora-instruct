@@ -142,21 +142,26 @@ jobs:
 
           chmod 600 "$AUTH_JSON_PATH"
 
-      - name: Install bubblewrap (codex sandbox)
-        # Codex's `--sandbox workspace-write` mode shells out to
-        # bubblewrap to isolate file access during exec. The
-        # ubuntu-latest runner image doesn't ship it; the codex CLI
-        # falls back to a vendored copy that can't always set up
-        # network namespaces inside the runner's already-
-        # unprivileged container. When the fallback fails, codex
-        # silently degrades to its GitHub-MCP + web-search tools to
-        # read the diff over the network — works, but burns extra
-        # tokens on every review and clutters the run log. The
-        # apt package is the cheapest way to get a working
-        # sandbox; if it still can't set up namespaces in your
-        # runner environment, the MCP fallback path remains as a
-        # safety net.
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap
+      # We deliberately do NOT install bubblewrap here. An earlier
+      # commit added `apt-get install -y bubblewrap` hoping to give
+      # codex's `--sandbox workspace-write` a real local sandbox to
+      # use; turns out the system bwrap fails the same way the
+      # vendored one does — `bwrap: loopback: Failed RTM_NEWADDR:
+      # Operation not permitted` — because GitHub-hosted runners
+      # don't grant CAP_NET_ADMIN to the unprivileged container they
+      # spawn jobs in, and bwrap needs that cap to bring up the
+      # loopback interface inside its private network namespace.
+      # No flag toggles around it on hosted runners.
+      #
+      # When bwrap fails to set up, codex correctly fails-closed:
+      # it refuses to shell out and falls back to its GitHub MCP +
+      # web-search tools to read the diff over the network. That's
+      # the steady state — slower per review and noisier in the
+      # logs, but the sandbox semantics stay honest. Reviews still
+      # land with accurate findings. Acceptable tradeoff vs.
+      # disabling the sandbox (which would expose secrets-on-disk
+      # to prompt-injected codex; see the `--sandbox` comment
+      # below for that history).
 
       - name: Install Codex CLI
         # Pin to a specific version so a breaking upstream release
