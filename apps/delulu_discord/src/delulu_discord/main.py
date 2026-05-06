@@ -41,7 +41,13 @@ def create_bot(settings: Settings) -> discord.Client:
     tree = app_commands.CommandTree(client)
 
     # ── Wire up components ───────────────────────────────────
-    session_manager = SessionManager(ttl_seconds=settings.session_ttl_seconds)
+    # Persistent SQLite-backed session store. Caller (``main()``)
+    # awaits ``session_manager.connect()`` before ``client.start``
+    # so the schema is in place by the time the first message lands.
+    session_manager = SessionManager(
+        db_path=settings.session_db_path,
+        ttl_seconds=settings.session_ttl_seconds,
+    )
     dispatcher = SandboxDispatcher(settings=settings)
     # Modal-Dict-backed channel→(repo_url, ref) binding store. Set
     # via /setrepo, looked up at @claude dispatch time.
@@ -65,6 +71,12 @@ def create_bot(settings: Settings) -> discord.Client:
         session_manager=session_manager,
         dispatcher=dispatcher,
     )
+
+    # Stash on the client so ``main()._run`` can reach it for
+    # ``connect()`` / ``close()`` without changing this function's
+    # return signature. discord.Client doesn't reserve underscore
+    # attributes, so this is safe.
+    client._session_manager = session_manager  # type: ignore[attr-defined]
 
     # ── Event handlers ───────────────────────────────────────
     @client.event
@@ -101,10 +113,14 @@ def create_bot(settings: Settings) -> discord.Client:
         # Thread reply: auto-continue if this thread is already ours, otherwise
         # require an explicit @-mention to pull us into the conversation.
         if isinstance(channel, discord.Thread):
-            owns_thread = (
-                channel.owner_id == bot_user.id
-                or session_manager.get_session(channel.id) is not None
-            )
+            # Check ``channel.owner_id`` first — purely in-memory and
+            # avoids the DB hit on the common case (bot-created
+            # threads). Only fall through to ``get_session`` when we
+            # might own the thread but didn't create it ourselves
+            # (e.g. session inherited a thread created by the user).
+            owns_thread = channel.owner_id == bot_user.id
+            if not owns_thread:
+                owns_thread = await session_manager.get_session(channel.id) is not None
             if not (owns_thread or bot_mentioned):
                 return
             prompt = _strip_mention(message.content, bot_user.id)
@@ -125,6 +141,28 @@ def create_bot(settings: Settings) -> discord.Client:
     return client
 
 
+async def _run(settings: Settings) -> None:
+    """Bring up SessionManager, start the Discord client, tear down cleanly.
+
+    Split out so ``client.start(...)`` runs in the same event loop as
+    ``await session_manager.connect()`` and ``await
+    session_manager.close()``. The ``finally`` runs on KeyboardInterrupt
+    and on Discord-side exceptions alike, so the SQLite WAL gets
+    checkpointed and the connection released even on hard restarts.
+    """
+    client = create_bot(settings)
+    # ``client._session_manager`` is set by ``create_bot`` for the
+    # lifecycle hooks here; pulling it back out keeps the wiring in
+    # one place. Plain attribute access on discord.Client is fine —
+    # the library doesn't reserve underscore-prefixed names.
+    session_manager: SessionManager = client._session_manager  # type: ignore[attr-defined]
+    await session_manager.connect()
+    try:
+        await client.start(settings.discord_bot_token)
+    finally:
+        await session_manager.close()
+
+
 def main() -> None:
     """Entrypoint for `delulu-discord` console script."""
     structlog.configure(
@@ -141,8 +179,7 @@ def main() -> None:
         logger.error("config.invalid", error=str(e))
         sys.exit(1)
 
-    client = create_bot(settings)
-    asyncio.run(client.start(settings.discord_bot_token))
+    asyncio.run(_run(settings))
 
 
 if __name__ == "__main__":

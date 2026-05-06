@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     # ── Session behavior ─────────────────────────────────────
     session_ttl_seconds: int = 3600  # 1 hour before session resets
     max_output_length: int = 1900  # Discord limit minus some margin
+    # SQLite file backing SessionManager. Defaults to /data/sessions.db
+    # which is the named-volume mount point set in the Makefile's
+    # `restart` target — the volume survives `docker rm`, so per-thread
+    # sessions persist across deploys (the bug fixed by this layer).
+    # Override to a tmp path in tests; override to anywhere else for
+    # local-dev runs that don't have the /data mount.
+    session_db_path: str = "/data/sessions.db"
 
     # ── Repo provisioning ────────────────────────────────────
     # The bare-cache root on the Modal Volume. Mirrors the constant

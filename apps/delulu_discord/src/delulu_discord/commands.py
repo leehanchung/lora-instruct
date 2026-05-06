@@ -342,7 +342,7 @@ def register_slash_commands(
         # The session must exist (so we know there's a workspace
         # this thread is bound to) and must have a repo binding
         # (so there's something meaningful to commit and push).
-        session = session_manager.get_session(interaction.channel.id)
+        session = await session_manager.get_session(interaction.channel.id)
         if session is None:
             await interaction.response.send_message(
                 "❌ No active session in this thread. Mention `@claude` first to create one.",
