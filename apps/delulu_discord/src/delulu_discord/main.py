@@ -27,8 +27,13 @@ def _strip_mention(content: str, bot_id: int) -> str:
     return re.sub(rf"<@!?{bot_id}>", "", content).strip()
 
 
-def create_bot(settings: Settings) -> discord.Client:
-    """Create and configure the Discord client."""
+def create_bot(settings: Settings) -> tuple[discord.Client, SessionManager]:
+    """Create and configure the Discord client.
+
+    Returns ``(client, session_manager)`` so the caller can drive
+    the SessionManager's ``connect()`` / ``close()`` lifecycle in
+    the same event loop as ``client.start``.
+    """
     intents = discord.Intents.default()
     intents.message_content = True
     intents.guilds = True
@@ -41,9 +46,6 @@ def create_bot(settings: Settings) -> discord.Client:
     tree = app_commands.CommandTree(client)
 
     # ── Wire up components ───────────────────────────────────
-    # Persistent SQLite-backed session store. Caller (``main()``)
-    # awaits ``session_manager.connect()`` before ``client.start``
-    # so the schema is in place by the time the first message lands.
     session_manager = SessionManager(
         db_path=settings.session_db_path,
         ttl_seconds=settings.session_ttl_seconds,
@@ -71,12 +73,6 @@ def create_bot(settings: Settings) -> discord.Client:
         session_manager=session_manager,
         dispatcher=dispatcher,
     )
-
-    # Stash on the client so ``main()._run`` can reach it for
-    # ``connect()`` / ``close()`` without changing this function's
-    # return signature. discord.Client doesn't reserve underscore
-    # attributes, so this is safe.
-    client._session_manager = session_manager  # type: ignore[attr-defined]
 
     # ── Event handlers ───────────────────────────────────────
     @client.event
@@ -138,24 +134,17 @@ def create_bot(settings: Settings) -> discord.Client:
                 return
             await handler.handle_channel_message(message, prompt)
 
-    return client
+    return client, session_manager
 
 
 async def _run(settings: Settings) -> None:
     """Bring up SessionManager, start the Discord client, tear down cleanly.
 
-    Split out so ``client.start(...)`` runs in the same event loop as
-    ``await session_manager.connect()`` and ``await
-    session_manager.close()``. The ``finally`` runs on KeyboardInterrupt
-    and on Discord-side exceptions alike, so the SQLite WAL gets
-    checkpointed and the connection released even on hard restarts.
+    The ``finally`` runs on KeyboardInterrupt and on Discord-side
+    exceptions alike, so the SQLite WAL gets checkpointed and the
+    connection released even on hard restarts.
     """
-    client = create_bot(settings)
-    # ``client._session_manager`` is set by ``create_bot`` for the
-    # lifecycle hooks here; pulling it back out keeps the wiring in
-    # one place. Plain attribute access on discord.Client is fine —
-    # the library doesn't reserve underscore-prefixed names.
-    session_manager: SessionManager = client._session_manager  # type: ignore[attr-defined]
+    client, session_manager = create_bot(settings)
     await session_manager.connect()
     try:
         await client.start(settings.discord_bot_token)
