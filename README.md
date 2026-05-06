@@ -492,7 +492,10 @@ without pushing a commit:
    - `pr-title-lint` only runs on `pull_request` events, so on a
      manual dispatch it's skipped
 3. On the droplet, `docker ps` should show the `disco` container running,
-   and `docker logs disco` should show a clean startup.
+   and `journalctl CONTAINER_NAME=disco --since "5 minutes ago"` (or
+   `make -C apps/delulu_discord logs`) should show a clean startup.
+   The bot uses the journald log driver so logs survive container
+   rebuilds — `docker logs disco` still works for the current run.
 
 Each job's logs are viewable independently in the Actions UI — no need
 to SSH in to debug unless the failure is in the droplet-side step.

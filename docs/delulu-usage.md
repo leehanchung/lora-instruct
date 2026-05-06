@@ -343,7 +343,7 @@ propagate after the bot starts. If it's been longer than ~10
 minutes and commands still aren't showing:
 
 ```bash
-ssh root@<droplet> 'docker logs disco 2>&1 | grep commands.'
+ssh root@<droplet> 'journalctl CONTAINER_NAME=disco --since "1 hour ago" | grep commands.'
 ```
 
 Look for `commands.registered count=6` and `commands.synced
@@ -369,7 +369,16 @@ make -C apps/delulu_discord deploy
 If the container is running but not responding, tail the logs:
 
 ```bash
-docker logs -f disco
+make -C apps/delulu_discord logs
+# or directly: journalctl -f CONTAINER_NAME=disco
+```
+
+For a post-mortem after the container has been restarted (e.g.
+investigating a cancellation that happened hours ago), query
+journald with a time window — the logs survive `docker rm`:
+
+```bash
+journalctl CONTAINER_NAME=disco --since "2026-05-05 15:50" --until "2026-05-05 15:56"
 ```
 
 Anything from a failed Modal dispatch (OAuth issues, sandbox
@@ -402,5 +411,8 @@ under "Out of scope — park for v2":
 - **Architecture questions** → [`ARCHITECTURE.md`](../ARCHITECTURE.md)
 - **Deployment questions** → [`README.md`](../README.md)
 - **Design decisions** → the PRDs under [`prd/`](../prd/)
-- **Anything going wrong** → `docker logs disco` on the droplet is
-  the single best source of truth for what the bot is doing
+- **Anything going wrong** → `journalctl -f CONTAINER_NAME=disco` on
+  the droplet (or `make -C apps/delulu_discord logs`) is the single
+  best source of truth for what the bot is doing. The bot ships
+  stdout/stderr to systemd-journald so logs survive container
+  rebuilds — query historical windows with `--since` / `--until`

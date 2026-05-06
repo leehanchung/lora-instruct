@@ -51,9 +51,19 @@ image:
 restart:
 	-docker stop $(BOT_NAME)
 	-docker rm $(BOT_NAME)
+	# --log-driver=journald: ship container stdout/stderr to systemd-journald
+	# instead of Docker's default json-file driver. The default writes to a
+	# per-container file under /var/lib/docker/containers/<id>/ that is
+	# deleted with `docker rm` — every `make deploy` would wipe history,
+	# making post-mortems on cancellations or crashes impossible across a
+	# rebuild. journald survives container removal, restarts, and host
+	# reboots (assuming /var/log/journal/ exists; create it with
+	# `sudo mkdir -p /var/log/journal && sudo systemctl restart systemd-journald`
+	# if it doesn't).
 	docker run -d \
 	  --name $(BOT_NAME) \
 	  --restart=unless-stopped \
+	  --log-driver=journald \
 	  --env-file $(ENV_FILE) \
 	  -v $(MODAL_TOML):/root/.modal.toml:ro \
 	  -v $(DATA_VOLUME):/data \
@@ -61,8 +71,12 @@ restart:
 
 deploy: image restart
 
+# `journalctl -f` tails new lines and also makes historical queries
+# possible (`journalctl CONTAINER_NAME=disco --since "1 hour ago"`).
+# `docker logs` still works for the current container's lifetime under
+# the journald driver, but loses everything on `docker rm`.
 logs:
-	docker logs -f $(BOT_NAME)
+	journalctl -f CONTAINER_NAME=$(BOT_NAME)
 
 stop:
 	-docker stop $(BOT_NAME)
