@@ -60,54 +60,104 @@ jobs:
           REPO: ${{ github.event.repository.name }}
           PR: ${{ github.event.pull_request.number }}
           REVIEWER_LOGIN: ${{ github.event.review.user.login }}
-          REVIEW_AT: ${{ github.event.review.submitted_at }}
+          # The GraphQL Node ID of the review that just fired this
+          # workflow. Used to exclude threads that belong to THIS
+          # review so we don't resolve them right after they post.
+          # (Codex flagged that filtering by createdAt was unsafe:
+          # a review's own comments can have createdAt earlier than
+          # the review's submitted_at because the comments are
+          # created as part of the review before the submitted
+          # event delivers. Node-ID equality is the unambiguous
+          # way to identify "did this comment come with this very
+          # review.")
+          REVIEW_NODE_ID: ${{ github.event.review.node_id }}
         run: |
           set -euo pipefail
 
           echo "Reviewer: $REVIEWER_LOGIN"
-          echo "Review submitted_at: $REVIEW_AT"
-          echo "Looking for unresolved threads on PR #$PR authored by $REVIEWER_LOGIN before $REVIEW_AT"
+          echo "Looking for unresolved threads on PR #$PR authored by $REVIEWER_LOGIN that are NOT part of review $REVIEW_NODE_ID"
 
-          # GraphQL: pull every review thread on the PR with the
-          # first comment's author + createdAt. We page once at
-          # 100 (PRs with > 100 review threads are rare; if it
-          # ever matters we'd need cursor-based paging).
-          THREADS_JSON=$(gh api graphql -f query='
-            query($owner: String!, $repo: String!, $pr: Int!) {
-              repository(owner: $owner, name: $repo) {
-                pullRequest(number: $pr) {
-                  reviewThreads(first: 100) {
-                    nodes {
-                      id
-                      isResolved
-                      comments(first: 1) {
-                        nodes { author { login } createdAt }
+          # Page through reviewThreads with cursor-based pagination
+          # — claude flagged that hard-coding `first: 100` could
+          # silently drop matches on large PRs. Each page's matching
+          # IDs land in $IDS_FILE; the resolve loop walks the file
+          # at the end.
+          IDS_FILE="$RUNNER_TEMP/threads-to-resolve.txt"
+          : > "$IDS_FILE"
+
+          CURSOR=""
+          PAGE=0
+          while : ; do
+            PAGE=$((PAGE + 1))
+
+            if [ -z "$CURSOR" ]; then
+              AFTER_CLAUSE=""
+            else
+              AFTER_CLAUSE=", after: \"$CURSOR\""
+            fi
+
+            # The query is built inline because gh api -F doesn't
+            # bind a `null` cursor cleanly across both first-page
+            # and subsequent-page calls. The cursor value is
+            # opaque base64 with no shell-special chars so direct
+            # interpolation is safe.
+            PAGE_JSON=$(gh api graphql -f query="
+              query(\$owner: String!, \$repo: String!, \$pr: Int!) {
+                repository(owner: \$owner, name: \$repo) {
+                  pullRequest(number: \$pr) {
+                    reviewThreads(first: 100${AFTER_CLAUSE}) {
+                      pageInfo { hasNextPage endCursor }
+                      nodes {
+                        id
+                        isResolved
+                        comments(first: 1) {
+                          nodes {
+                            author { login }
+                            pullRequestReview { id }
+                          }
+                        }
                       }
                     }
                   }
                 }
-              }
-            }' \
-            -F owner="$OWNER" \
-            -F repo="$REPO" \
-            -F pr="$PR")
+              }" \
+              -F owner="$OWNER" \
+              -F repo="$REPO" \
+              -F pr="$PR")
 
-          # Filter:
-          #   - unresolved
-          #   - authored by the new review's user
-          #   - first comment older than the new review (so we
-          #     never resolve threads the new review just opened)
-          IDS=$(echo "$THREADS_JSON" | jq -r \
-            --arg login "$REVIEWER_LOGIN" \
-            --arg at "$REVIEW_AT" '
-              .data.repository.pullRequest.reviewThreads.nodes[]
-              | select(.isResolved == false)
-              | select(.comments.nodes[0].author.login == $login)
-              | select(.comments.nodes[0].createdAt < $at)
-              | .id')
+            # Filter on this page:
+            #   - thread is unresolved
+            #   - first comment exists AND its author login matches
+            #     the reviewer (null-safe: ghost/deleted accounts
+            #     yield .author == null which would otherwise error
+            #     under set -e and kill the entire resolve step)
+            #   - first comment's review is NOT the one that just
+            #     fired this workflow (so we never resolve the
+            #     new review's own brand-new threads)
+            echo "$PAGE_JSON" | jq -r \
+              --arg login "$REVIEWER_LOGIN" \
+              --arg review_id "$REVIEW_NODE_ID" '
+                .data.repository.pullRequest.reviewThreads.nodes[]
+                | select(.isResolved == false)
+                | select((.comments.nodes[0].author? // null) != null)
+                | select(.comments.nodes[0].author.login == $login)
+                | select((.comments.nodes[0].pullRequestReview.id // "") != $review_id)
+                | .id' \
+              >> "$IDS_FILE"
 
-          if [ -z "$IDS" ]; then
-            echo "No prior threads to resolve."
+            HAS_NEXT=$(echo "$PAGE_JSON" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
+            CURSOR=$(echo "$PAGE_JSON" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // empty')
+
+            if [ "$HAS_NEXT" != "true" ] || [ -z "$CURSOR" ]; then
+              break
+            fi
+          done
+
+          MATCH_COUNT=$(wc -l < "$IDS_FILE" | tr -d ' ')
+          echo "Walked $PAGE page(s); $MATCH_COUNT thread(s) to resolve."
+
+          if [ "$MATCH_COUNT" -eq 0 ]; then
+            echo "Nothing to do."
             exit 0
           fi
 
@@ -126,6 +176,6 @@ jobs:
               FAIL=$((FAIL + 1))
               echo "warning: failed to resolve thread $THREAD_ID"
             fi
-          done <<< "$IDS"
+          done < "$IDS_FILE"
 
           echo "Resolved $OK prior thread(s); $FAIL failure(s)."
