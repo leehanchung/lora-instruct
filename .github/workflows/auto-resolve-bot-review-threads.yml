@@ -1,0 +1,131 @@
+name: Auto-resolve bot review threads
+
+# Branch protection requires every conversation to be resolved
+# before merge. Coding-agent reviewers (claude[bot],
+# codex-code-reviewer[bot], etc.) post fresh reviews on every
+# push, but their PRIOR inline-comment threads stay open until
+# someone clicks Resolve in the UI. With multiple bots × multiple
+# pushes that's a lot of manual clicking.
+#
+# When a bot submits a NEW review, this workflow walks every
+# unresolved thread on the PR that:
+#   - was authored by the same bot, AND
+#   - was created BEFORE the new review's submitted_at
+# and resolves it via the GraphQL `resolveReviewThread` mutation.
+# The createdAt filter is what keeps the new review's brand-new
+# threads safe (they're younger than submitted_at).
+#
+# Bot-agnostic: works for any reviewer whose login ends in
+# `[bot]` or whose user.type is "Bot". Doesn't touch human
+# reviewers — their resolution is always a deliberate human act.
+#
+# Auth: uses the default GITHUB_TOKEN. The resolve action shows
+# in the audit log under github-actions[bot] rather than the
+# original reviewer, but resolveReviewThread only requires
+# `pull-requests: write` and the resolution itself is what
+# matters; provenance of the click is secondary.
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+# Workflow-level concurrency: serialize per-PR so two simultaneous
+# bot reviews (e.g. claude + codex on the same push) don't race
+# the GraphQL resolve mutations against each other. Cheap to
+# serialize — the whole job runs in seconds.
+concurrency:
+  group: auto-resolve-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve bot's prior threads
+    # Only run when the reviewer is a bot. Belt-and-suspenders:
+    # check both the [bot] suffix on the login (covers GitHub
+    # App installations like claude[bot] / codex-code-reviewer[bot])
+    # AND the .user.type field (would cover legacy bots that
+    # don't carry the suffix). Either signal is enough.
+    if: >-
+      github.event.review.state != 'DISMISSED'
+      && (endsWith(github.event.review.user.login, '[bot]')
+          || github.event.review.user.type == 'Bot')
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Resolve prior threads from this reviewer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          PR: ${{ github.event.pull_request.number }}
+          REVIEWER_LOGIN: ${{ github.event.review.user.login }}
+          REVIEW_AT: ${{ github.event.review.submitted_at }}
+        run: |
+          set -euo pipefail
+
+          echo "Reviewer: $REVIEWER_LOGIN"
+          echo "Review submitted_at: $REVIEW_AT"
+          echo "Looking for unresolved threads on PR #$PR authored by $REVIEWER_LOGIN before $REVIEW_AT"
+
+          # GraphQL: pull every review thread on the PR with the
+          # first comment's author + createdAt. We page once at
+          # 100 (PRs with > 100 review threads are rare; if it
+          # ever matters we'd need cursor-based paging).
+          THREADS_JSON=$(gh api graphql -f query='
+            query($owner: String!, $repo: String!, $pr: Int!) {
+              repository(owner: $owner, name: $repo) {
+                pullRequest(number: $pr) {
+                  reviewThreads(first: 100) {
+                    nodes {
+                      id
+                      isResolved
+                      comments(first: 1) {
+                        nodes { author { login } createdAt }
+                      }
+                    }
+                  }
+                }
+              }
+            }' \
+            -F owner="$OWNER" \
+            -F repo="$REPO" \
+            -F pr="$PR")
+
+          # Filter:
+          #   - unresolved
+          #   - authored by the new review's user
+          #   - first comment older than the new review (so we
+          #     never resolve threads the new review just opened)
+          IDS=$(echo "$THREADS_JSON" | jq -r \
+            --arg login "$REVIEWER_LOGIN" \
+            --arg at "$REVIEW_AT" '
+              .data.repository.pullRequest.reviewThreads.nodes[]
+              | select(.isResolved == false)
+              | select(.comments.nodes[0].author.login == $login)
+              | select(.comments.nodes[0].createdAt < $at)
+              | .id')
+
+          if [ -z "$IDS" ]; then
+            echo "No prior threads to resolve."
+            exit 0
+          fi
+
+          OK=0
+          FAIL=0
+          while IFS= read -r THREAD_ID; do
+            [ -z "$THREAD_ID" ] && continue
+            if gh api graphql -f query='
+                mutation($id: ID!) {
+                  resolveReviewThread(input: {threadId: $id}) {
+                    thread { isResolved }
+                  }
+                }' -f id="$THREAD_ID" >/dev/null 2>&1; then
+              OK=$((OK + 1))
+            else
+              FAIL=$((FAIL + 1))
+              echo "warning: failed to resolve thread $THREAD_ID"
+            fi
+          done <<< "$IDS"
+
+          echo "Resolved $OK prior thread(s); $FAIL failure(s)."
