@@ -310,10 +310,17 @@ jobs:
         # OIDC-exchange round trip — they hold the App's private
         # key server-side, we hold ours in repo secrets.
         #
-        # Explicit `success() &&` is load-bearing: a custom `if:`
-        # drops the implicit success() guard, so without it this
-        # would still run after a previous-step failure.
-        if: success() && steps.run_codex.outputs.output-file != ''
+        # We gate on `steps.run_codex.conclusion`, NOT `success()`.
+        # `success()` would also include the Persist step (which
+        # runs `if: always()` and may legitimately fail on a
+        # transient SSH blip to the droplet) — and a Persist
+        # failure shouldn't drop the review submission. The
+        # explicit conclusion check decouples "did codex produce
+        # a review?" from "did we save the refreshed auth.json?"
+        # while still skipping Mint when codex itself errored.
+        if: >-
+          steps.run_codex.conclusion == 'success'
+          && steps.run_codex.outputs.output-file != ''
         id: app_token
         # Pinned to a full commit SHA (per supply-chain hygiene for
         # an action that handles a long-lived signing key). The
@@ -326,18 +333,17 @@ jobs:
           private-key: ${{ secrets.CODEX_APP_PRIVATE_KEY }}
 
       - name: Submit review
-        # Custom `if:` expressions DROP the implicit success()
-        # guard, so we re-add it explicitly — without it, this
-        # step would run with an empty GH_TOKEN even when the
-        # Mint step above failed (secrets missing, App not
-        # installed, GitHub App API hiccup), masking the real
-        # failure as an opaque 401 from `gh api`.
+        # Same rationale as the Mint step: we gate on per-step
+        # conclusions, NOT `success()`. `success()` would include
+        # the Persist step (`if: always()`) and a transient
+        # persist failure shouldn't silently drop the review.
         #
-        # The conclusion check on app_token catches the case where
-        # the action ran but didn't produce a token (e.g. private
-        # key parsing succeeded but installation token request
-        # came back malformed). Belt-and-suspenders to a real
-        # auth failure visible in the step log.
+        # The token-non-empty check catches the case where Mint
+        # ran but didn't produce a token (e.g. private key parsed
+        # but installation token request came back malformed) —
+        # without it, gh api would post with GH_TOKEN='' and
+        # surface as an opaque 401 instead of a clear earlier
+        # failure.
         #
         # Cannot use `hashFiles()` for the codex-output check
         # because it only sees files under $GITHUB_WORKSPACE — our
@@ -346,7 +352,7 @@ jobs:
         # instead. (Codex's own review of an earlier push caught
         # the original hashFiles bug — thanks codex.)
         if: >-
-          success()
+          steps.run_codex.conclusion == 'success'
           && steps.run_codex.outputs.output-file != ''
           && steps.app_token.conclusion == 'success'
           && steps.app_token.outputs.token != ''
