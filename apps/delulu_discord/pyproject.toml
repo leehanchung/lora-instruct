@@ -17,6 +17,7 @@ dev = [
     "ruff>=0.15",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "pytest-timeout>=2.3",
 ]
 
 [project.scripts]
@@ -43,3 +44,9 @@ select = ["E", "F", "I", "N", "W", "UP"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: marks tests that call deployed Modal functions",
+]
+# Default: skip integration tests. CI's daily e2e workflow runs them
+# explicitly with ``-m integration``.
+addopts = "-m 'not integration'"

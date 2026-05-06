@@ -1,0 +1,98 @@
+name: delulu e2e
+
+# Scheduled end-to-end tests that call the deployed Modal sandbox.
+#
+# These tests exercise the full sandbox path: container boot, Claude
+# Code execution, volume I/O, repo provisioning, and event streaming.
+# They burn real Claude tokens and Modal compute, so they run on a
+# daily schedule rather than on every push.
+#
+# Manual trigger (workflow_dispatch) is available for ad-hoc runs
+# after a deploy or config change.
+#
+# Why ``-m integration`` is on every pytest call: each app's
+# ``pyproject.toml`` sets ``addopts = "-m 'not integration'"`` so
+# local ``uv run pytest`` skips the slow Modal-touching tests by
+# default. CI overrides that with an explicit positive marker —
+# without ``-m integration`` the addopts deselects every test in
+# ``tests/integration/`` and the job silently passes with zero
+# tests run.
+
+on:
+  schedule:
+    # Daily at 08:00 UTC (midnight PST)
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+# Read-only by default. This workflow checks out code and calls
+# Modal — it doesn't push to the repo, comment on PRs, or publish
+# packages. Setting it explicitly avoids the GitHub Actions default
+# of broad write so a compromised dependency action (checkout,
+# setup-uv) can't escalate to repo writes.
+permissions:
+  contents: read
+
+jobs:
+  e2e-sandbox:
+    runs-on: ubuntu-latest
+    # 11 sandbox tests × 180 s test timeout = ~33 min worst case;
+    # 45 minutes covers that plus checkout + uv sync without leaving
+    # pathological paths to GitHub's runner-level kill.
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: apps/delulu_sandbox_modal
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: install deps
+        run: uv sync --extra dev
+
+      - name: run integration tests
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          uv run pytest tests/integration/ -v \
+            -m integration \
+            --timeout=180 \
+            --tb=short \
+            -x
+
+  # Dispatcher tests live in apps/delulu_discord — the dispatcher is
+  # a bot-side type and the sandbox-side import boundary forbids
+  # ``delulu_sandbox_modal`` from importing ``delulu_discord``. Keeping
+  # the test there means a normal local import, no cross-app venv
+  # install, and the boundary stays clean.
+  e2e-dispatcher:
+    runs-on: ubuntu-latest
+    # 3 dispatcher tests × 180 s = 9 min worst case; 30 minutes is
+    # a comfortable ceiling that includes checkout + uv sync.
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/delulu_discord
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: install deps
+        run: uv sync --extra dev
+
+      - name: run dispatcher integration tests
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          uv run pytest tests/integration/test_dispatcher.py -v \
+            -m integration \
+            --timeout=180 \
+            --tb=short \
+            -x

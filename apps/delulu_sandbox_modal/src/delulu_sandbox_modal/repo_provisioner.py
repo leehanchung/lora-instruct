@@ -129,6 +129,15 @@ def provision_workspace(
         _fetch_bare(bare_path, ref, github_token=github_token)
         timings.fetch_ms = _elapsed_ms(fetch_start)
 
+    # Make sure the bare cache's ``info/exclude`` ignores our marker
+    # file BEFORE the worktree is created/refreshed. Without this,
+    # ``commit_workspace_changes`` sees ``.provision.json`` as
+    # untracked and ``git add -A`` stages it on every /commit —
+    # leaking the bot's internal state into the user's branch.
+    # Idempotent: covers both cold clones and pre-existing caches
+    # that predate this fix.
+    _ensure_marker_excluded(bare_path)
+
     # Create (or replace) the per-thread worktree.
     worktree_start = time.monotonic()
     _ensure_worktree(bare_path, workspace_path, ref, github_token=github_token)
@@ -149,6 +158,35 @@ def _workspace_path(thread_id: int) -> str:
 def _bare_cache_path(repo_url: str) -> str:
     host, org, repo = _parse_repo_url(repo_url)
     return f"{REPO_CACHE_ROOT}/{host}/{org}/{repo}.git"
+
+
+def _ensure_marker_excluded(bare_path: str) -> None:
+    """Append ``PROVISION_MARKER_NAME`` to the bare cache's ``info/exclude``.
+
+    The bare cache's ``info/exclude`` is shared by every worktree
+    git creates from it (per ``git-worktree(1)``), so writing the
+    rule once on the bare side ignores the marker in every per-thread
+    worktree's ``git status``. Without this, every ``/commit`` would
+    stage ``.provision.json`` via ``git add -A`` and push the bot's
+    internal state to the user's branch.
+
+    Idempotent — reads the existing file and only appends when the
+    marker name isn't already there. Safe to call on every provision.
+    """
+    exclude_path = os.path.join(bare_path, "info", "exclude")
+    os.makedirs(os.path.dirname(exclude_path), exist_ok=True)
+
+    existing = ""
+    if os.path.exists(exclude_path):
+        with open(exclude_path) as f:
+            existing = f.read()
+    if PROVISION_MARKER_NAME in existing.splitlines():
+        return
+
+    with open(exclude_path, "a") as f:
+        if existing and not existing.endswith("\n"):
+            f.write("\n")
+        f.write(f"{PROVISION_MARKER_NAME}\n")
 
 
 def _parse_repo_url(repo_url: str) -> tuple[str, str, str]:

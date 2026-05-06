@@ -12,6 +12,7 @@ dependencies = [
 dev = [
     "ruff>=0.15",
     "pytest>=8.0",
+    "pytest-timeout>=2.3",
 ]
 
 [build-system]
@@ -34,3 +35,9 @@ select = ["E", "F", "I", "N", "W", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: marks tests that call deployed Modal functions (deselect with '-m \"not integration\"')",
+]
+# Default: skip integration tests. Run them explicitly with:
+#   uv run pytest tests/integration/ -v --timeout=180
+addopts = "-m 'not integration'"
