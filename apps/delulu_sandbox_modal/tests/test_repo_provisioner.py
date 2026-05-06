@@ -628,3 +628,81 @@ class TestEnsureWorktreeAuth:
 
         worktree_add = next(c for c in calls if "add" in c[0])
         assert worktree_add[1]["github_token"] is None
+
+
+class TestEnsureMarkerExcluded:
+    """``_ensure_marker_excluded`` writes ``info/exclude`` so the bare
+    cache's worktrees ignore ``.provision.json`` in ``git status``.
+
+    Without this helper, every ``/commit`` against a workspace would
+    stage the bot's per-thread marker via ``git add -A`` and push it
+    to the user's branch — the bug surfaced by the e2e test
+    ``test_commit_no_changes_returns_status``.
+    """
+
+    def test_creates_exclude_file_when_missing(self, tmp_path):
+        from delulu_sandbox_modal.repo_provisioner import (
+            PROVISION_MARKER_NAME,
+            _ensure_marker_excluded,
+        )
+
+        bare = tmp_path / "bare.git"
+        bare.mkdir()
+        # ``info/`` doesn't exist — the helper must create it.
+        _ensure_marker_excluded(str(bare))
+
+        contents = (bare / "info" / "exclude").read_text()
+        assert PROVISION_MARKER_NAME in contents.splitlines()
+
+    def test_appends_to_existing_exclude(self, tmp_path):
+        from delulu_sandbox_modal.repo_provisioner import (
+            PROVISION_MARKER_NAME,
+            _ensure_marker_excluded,
+        )
+
+        bare = tmp_path / "bare.git"
+        (bare / "info").mkdir(parents=True)
+        existing = "# user content\nbuild/\n*.tmp\n"
+        (bare / "info" / "exclude").write_text(existing)
+
+        _ensure_marker_excluded(str(bare))
+
+        contents = (bare / "info" / "exclude").read_text()
+        # Existing rules are preserved verbatim — appending must
+        # not rewrite or reorder pre-existing user rules.
+        assert contents.startswith(existing)
+        assert PROVISION_MARKER_NAME in contents.splitlines()
+
+    def test_idempotent(self, tmp_path):
+        from delulu_sandbox_modal.repo_provisioner import (
+            PROVISION_MARKER_NAME,
+            _ensure_marker_excluded,
+        )
+
+        bare = tmp_path / "bare.git"
+        bare.mkdir()
+        for _ in range(3):
+            _ensure_marker_excluded(str(bare))
+
+        contents = (bare / "info" / "exclude").read_text()
+        # Marker appears exactly once even after multiple calls.
+        assert contents.splitlines().count(PROVISION_MARKER_NAME) == 1
+
+    def test_appends_newline_when_existing_lacks_trailing(self, tmp_path):
+        # Defensive: a hand-edited info/exclude may have no trailing
+        # newline. Naive append would put the marker on the same line
+        # as the previous entry, silently breaking the previous rule.
+        from delulu_sandbox_modal.repo_provisioner import (
+            PROVISION_MARKER_NAME,
+            _ensure_marker_excluded,
+        )
+
+        bare = tmp_path / "bare.git"
+        (bare / "info").mkdir(parents=True)
+        (bare / "info" / "exclude").write_text("build/")  # no trailing \n
+
+        _ensure_marker_excluded(str(bare))
+
+        lines = (bare / "info" / "exclude").read_text().splitlines()
+        assert "build/" in lines
+        assert PROVISION_MARKER_NAME in lines
