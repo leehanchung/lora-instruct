@@ -24,10 +24,21 @@ on:
     - cron: '0 8 * * *'
   workflow_dispatch:
 
+# Read-only by default. This workflow checks out code and calls
+# Modal — it doesn't push to the repo, comment on PRs, or publish
+# packages. Setting it explicitly avoids the GitHub Actions default
+# of broad write so a compromised dependency action (checkout,
+# setup-uv) can't escalate to repo writes.
+permissions:
+  contents: read
+
 jobs:
   e2e-sandbox:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 11 sandbox tests × 180 s test timeout = ~33 min worst case;
+    # 45 minutes covers that plus checkout + uv sync without leaving
+    # pathological paths to GitHub's runner-level kill.
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: apps/delulu_sandbox_modal
@@ -59,7 +70,9 @@ jobs:
   # install, and the boundary stays clean.
   e2e-dispatcher:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 3 dispatcher tests × 180 s = 9 min worst case; 30 minutes is
+    # a comfortable ceiling that includes checkout + uv sync.
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: apps/delulu_discord

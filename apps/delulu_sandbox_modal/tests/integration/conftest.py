@@ -14,7 +14,11 @@ Prerequisites:
 
 Run:
   cd apps/delulu_sandbox_modal
-  uv run pytest tests/integration/ -v --timeout=180
+  uv run pytest tests/integration/ -v -m integration --timeout=180
+
+The ``-m integration`` flag is required because the package's
+``addopts = "-m 'not integration'"`` deselects this directory by
+default — without it the suite collects zero tests and exits 0.
 """
 
 from __future__ import annotations
