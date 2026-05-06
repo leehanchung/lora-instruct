@@ -171,26 +171,53 @@ jobs:
         id: run_codex
         env:
           PROMPT: |
-            This is PR #${{ github.event.pull_request.number }} for ${{ github.repository }}.
+            You are reviewing PR #${{ github.event.pull_request.number }}
+            for ${{ github.repository }}.
 
-            Review ONLY the changes introduced by the PR, so consider:
-               git log --oneline ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}
-
-            Suggest any improvements, potential bugs, or issues.
-            Be concise and specific in your feedback.
+            Look ONLY at the changes introduced by the PR:
+              git diff ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}
 
             Pull request title and body:
             ----
             ${{ github.event.pull_request.title }}
             ${{ github.event.pull_request.body }}
+            ----
 
-            IMPORTANT: End your response with exactly one of these on its
-            own line:
-            VERDICT: APPROVE
-            VERDICT: COMMENT
+            Output a single JSON object matching this schema, with
+            no markdown fence and no surrounding prose:
 
-            Use APPROVE if the code looks good with no substantive issues.
-            Use COMMENT if you found issues worth addressing.
+            {
+              "event": "APPROVE" | "COMMENT" | "REQUEST_CHANGES",
+              "body": "<one short paragraph summarizing the review>",
+              "comments": [
+                {
+                  "path": "<repo-relative file path that exists in the diff>",
+                  "line": <integer line number in the file's NEW (head) version>,
+                  "side": "RIGHT",
+                  "body": "<concise comment scoped to this single line>"
+                }
+              ]
+            }
+
+            Rules:
+            - Use APPROVE only if there is nothing worth flagging.
+            - Use COMMENT for advisory findings; REQUEST_CHANGES only
+              for genuine blockers.
+            - Each entry in `comments` MUST anchor to a line that
+              actually appears in the diff (use `git diff` to verify
+              before emitting). Prefer fewer, sharper comments over
+              many noisy ones.
+            - For comments on lines REMOVED by the PR, set "side":
+              "LEFT" and reference the line number in the OLD version.
+            - If you have a finding that doesn't anchor to a single
+              line (cross-file design issue, missing test coverage,
+              etc.), put it in the top-level `body` instead of
+              forcing a `comments` entry.
+            - Output an empty `comments` array if there are no
+              line-specific findings.
+            - The output is parsed by `jq` and posted to the GitHub
+              Reviews API verbatim — invalid JSON or invalid
+              path/line refs will fail the workflow loudly. Be precise.
         run: |
           set -euo pipefail
 
@@ -431,27 +458,59 @@ jobs:
             exit 0
           fi
 
-          # Read directly from the file — never round-trips through
-          # $GITHUB_OUTPUT, so no delimiter-collision risk regardless
-          # of what Codex emits.
-          CODEX_MESSAGE=$(cat "$CODEX_OUTPUT_FILE")
+          # Codex now emits a JSON object with `event`, `body`, and
+          # an optional `comments` array of {path, line, side, body}
+          # entries — the review posts as inline diff comments,
+          # matching how anthropics/claude-code-action surfaces.
+          # See the prompt above for the schema.
+          #
+          # Defensive cleanup: in practice codex sometimes wraps the
+          # JSON in a ```json fence despite the explicit "no markdown
+          # fence" instruction. Strip leading/trailing fences before
+          # parsing so we don't fail on a known model quirk.
+          RAW=$(cat "$CODEX_OUTPUT_FILE")
+          CLEAN=$(printf '%s' "$RAW" \
+            | sed -E 's/^```(json)?[[:space:]]*//' \
+            | sed -E 's/[[:space:]]*```$//')
 
-          if echo "$CODEX_MESSAGE" | grep -q "^VERDICT: APPROVE"; then
-            EVENT="APPROVE"
-          else
-            EVENT="COMMENT"
+          if ! echo "$CLEAN" | jq empty 2>/dev/null; then
+            echo "::error::Codex output is not valid JSON. Raw output:"
+            printf '%s\n' "$RAW"
+            exit 1
           fi
-          BODY=$(echo "$CODEX_MESSAGE" | sed '/^VERDICT: /d')
 
-          # gh api accepts -F field=@file for body content; using -f
-          # with a shell var is fine here because we control the
-          # variable expansion via bash quoting (the var is set from
-          # `cat` and never re-interpreted).
+          # Build the Reviews API payload in jq so the body / comment
+          # text never round-trips through shell quoting. `--input`
+          # below sends the file as the request body; we do NOT pass
+          # `-f event=...` flags because `gh api --input` puts those
+          # in the query string instead of the body (codex itself
+          # warned about this exact pattern in an earlier review).
+          PAYLOAD=$(mktemp -p "$RUNNER_TEMP" review.XXXXXX.json)
+          echo "$CLEAN" \
+            | jq --arg sha "${{ github.event.pull_request.head.sha }}" \
+                '{commit_id: $sha, event: .event, body: .body, comments: (.comments // [])}' \
+            > "$PAYLOAD"
+
+          # Sanity-check the event value before posting — GitHub
+          # only accepts APPROVE / REQUEST_CHANGES / COMMENT and
+          # 422s on anything else, so fail fast with a useful
+          # message if the model freelanced.
+          EVENT=$(jq -r .event "$PAYLOAD")
+          case "$EVENT" in
+            APPROVE|REQUEST_CHANGES|COMMENT) ;;
+            *)
+              echo "::error::Codex returned unsupported event '$EVENT'. Expected APPROVE / REQUEST_CHANGES / COMMENT."
+              exit 1
+              ;;
+          esac
+
+          NUM_COMMENTS=$(jq '.comments | length' "$PAYLOAD")
+          echo "Posting $EVENT review with $NUM_COMMENTS inline comment(s)"
+
           gh api \
             "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews" \
             --method POST \
-            -f event="$EVENT" \
-            -f body="$BODY" \
+            --input "$PAYLOAD" \
             --jq '.html_url'
 
       - name: Resolve snapshotted prior threads
