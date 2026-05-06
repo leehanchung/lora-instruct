@@ -254,6 +254,28 @@ jobs:
 
           echo "auth.json: persisted refreshed copy to droplet"
 
+      - name: Mint installation token for the codex-code-reviewer App
+        # Without this step the Submit step would post the review
+        # under `github-actions[bot]` (the default token's identity),
+        # which makes Codex's reviews indistinguishable from any
+        # other workflow comment in the PR UI. The custom App lets
+        # the review surface as `codex-code-reviewer[bot]` (or
+        # whatever slug the App was registered under).
+        #
+        # CODEX_APP_ID and CODEX_APP_PRIVATE_KEY are repo secrets
+        # the App owner sets manually; the action mints a short-
+        # lived installation access token (default 1h, revoked at
+        # job end) that's then used for the Reviews API call below.
+        # Same shape Anthropic's claude-code-action uses, minus the
+        # OIDC-exchange round trip — they hold the App's private
+        # key server-side, we hold ours in repo secrets.
+        if: steps.run_codex.outputs.output-file != ''
+        id: app_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.CODEX_APP_ID }}
+          private-key: ${{ secrets.CODEX_APP_PRIVATE_KEY }}
+
       - name: Submit review
         # `success()` (the default if:) ensures we only run when
         # Run Codex itself succeeded; the path check filters out
@@ -267,7 +289,10 @@ jobs:
         if: steps.run_codex.outputs.output-file != ''
         env:
           CODEX_OUTPUT_FILE: ${{ steps.run_codex.outputs.output-file }}
-          GH_TOKEN: ${{ github.token }}
+          # Use the App's installation token, not github.token, so
+          # the review posts under the App's bot identity. See the
+          # Mint step above for the rationale.
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: |
           set -euo pipefail
 
