@@ -276,7 +276,7 @@ Ship in two commits so each is independently useful and revertable:
   click cancel, verify:
   - Status message freezes with `🛑 Cancelled` footer
   - No final message appears
-  - `docker logs disco` shows `dispatch.cancelled session_id=...`
+  - `journalctl CONTAINER_NAME=disco` shows `dispatch.cancelled session_id=...`
   - Modal dashboard shows the invocation cancelled (not timed out)
 
 Split this way, the behavioral change (task tracking, cancel path)
