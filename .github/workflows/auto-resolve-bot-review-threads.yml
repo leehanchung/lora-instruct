@@ -63,14 +63,23 @@ jobs:
           # The GraphQL Node ID of the review that just fired this
           # workflow. Used to exclude threads that belong to THIS
           # review so we don't resolve them right after they post.
-          # (Codex flagged that filtering by createdAt was unsafe:
-          # a review's own comments can have createdAt earlier than
-          # the review's submitted_at because the comments are
-          # created as part of the review before the submitted
-          # event delivers. Node-ID equality is the unambiguous
-          # way to identify "did this comment come with this very
-          # review.")
+          # (Codex flagged that filtering by createdAt alone was
+          # unsafe: a review's own comments can have createdAt
+          # earlier than the review's submitted_at because the
+          # comments are created as part of the review before the
+          # submitted event delivers. Node-ID equality is the
+          # unambiguous "this thread belongs to this very review.")
           REVIEW_NODE_ID: ${{ github.event.review.node_id }}
+          # Used as a SECONDARY filter alongside the Node-ID
+          # exclusion to defend against a delayed-run race: if a
+          # same-bot review B lands AFTER review A but this
+          # workflow processes A's webhook later, Node-ID alone
+          # would let A's run resolve B's threads (B's threadId
+          # != A's review.id, so the exclusion misses it). The
+          # createdAt cutoff says "only resolve threads opened
+          # before A was submitted" — independent of which review
+          # they belong to.
+          REVIEW_SUBMITTED_AT: ${{ github.event.review.submitted_at }}
         run: |
           set -euo pipefail
 
@@ -101,6 +110,12 @@ jobs:
             # and subsequent-page calls. The cursor value is
             # opaque base64 with no shell-special chars so direct
             # interpolation is safe.
+            # Pull up to 50 comments per thread so the
+            # human-participation check below has enough context.
+            # Threads with > 50 comments are vanishingly rare in
+            # practice; on the off chance one exists, conservative
+            # behavior (don't resolve) kicks in via the "all
+            # commenters are bots" check below.
             PAGE_JSON=$(gh api graphql -f query="
               query(\$owner: String!, \$repo: String!, \$pr: Int!) {
                 repository(owner: \$owner, name: \$repo) {
@@ -110,8 +125,10 @@ jobs:
                       nodes {
                         id
                         isResolved
-                        comments(first: 1) {
+                        comments(first: 50) {
+                          totalCount
                           nodes {
+                            createdAt
                             author { login }
                             pullRequestReview { id }
                           }
@@ -131,17 +148,43 @@ jobs:
             #     the reviewer (null-safe: ghost/deleted accounts
             #     yield .author == null which would otherwise error
             #     under set -e and kill the entire resolve step)
+            #   - thread has NO non-bot replies — if a human chimed
+            #     in we leave the thread alone regardless of who
+            #     started it. Identifies bots by `[bot]` suffix on
+            #     the login (covers GitHub Apps and the legacy
+            #     github-actions[bot]). Conservative: anything that
+            #     looks human-ish stays open.
+            #   - we only saw the first 50 comments; if the thread
+            #     was longer, conservatively leave it alone. We
+            #     don't know what's beyond and the cost of skipping
+            #     a stale thread is one manual click; the cost of
+            #     auto-resolving a live thread is dropping context.
             #   - first comment's review is NOT the one that just
             #     fired this workflow (so we never resolve the
             #     new review's own brand-new threads)
+            #   - first comment's createdAt < this review's
+            #     submitted_at (defense against the delayed-run
+            #     race where a same-bot newer review's threads
+            #     would otherwise be eligible)
             echo "$PAGE_JSON" | jq -r \
               --arg login "$REVIEWER_LOGIN" \
-              --arg review_id "$REVIEW_NODE_ID" '
+              --arg review_id "$REVIEW_NODE_ID" \
+              --arg cutoff "$REVIEW_SUBMITTED_AT" '
                 .data.repository.pullRequest.reviewThreads.nodes[]
                 | select(.isResolved == false)
                 | select((.comments.nodes[0].author? // null) != null)
                 | select(.comments.nodes[0].author.login == $login)
+                | select(.comments.totalCount <= (.comments.nodes | length))
+                | select(
+                    [.comments.nodes[]
+                     | (.author? // null)
+                     | select(. != null)
+                     | .login
+                     | endswith("[bot]")]
+                    | all
+                  )
                 | select((.comments.nodes[0].pullRequestReview.id // "") != $review_id)
+                | select(.comments.nodes[0].createdAt < $cutoff)
                 | .id' \
               >> "$IDS_FILE"
 
