@@ -1,5 +1,12 @@
 """Integration test for the bot-side dispatcher against the real sandbox.
 
+Lives in ``apps/delulu_discord/`` — not the sandbox app — because
+the sandbox-side import boundary documented in ``CLAUDE.md``
+forbids ``delulu_sandbox_modal`` from importing
+``delulu_discord``-side types like ``SandboxDispatcher``. Putting
+this test here also means the dispatcher is a normal local import,
+no cross-app venv install required.
+
 This test exercises the ``SandboxDispatcher`` class — the bot's
 client-side wrapper around ``modal.Function.from_name().remote_gen.aio()``
 — against the deployed Modal sandbox. Discord is NOT involved; only
@@ -17,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
+
 import pytest
 
 
@@ -49,9 +57,6 @@ class TestDispatcherRunTask:
     @pytest.fixture()
     def dispatcher(self):
         """Create a real dispatcher pointing at the deployed app."""
-        # Import here so the test file can be collected even if
-        # delulu_discord isn't installed in this venv — the import
-        # error will surface as a clear skip/failure on the fixture.
         from delulu_discord.dispatcher import SandboxDispatcher
 
         return SandboxDispatcher(settings=_FakeSettings())
@@ -74,9 +79,7 @@ class TestDispatcherRunTask:
 
         assert len(events) > 0, "Dispatcher yielded no events"
         types = [e["type"] for e in events]
-        assert "done" in types or "error" in types, (
-            f"No terminal event. Types: {types}"
-        )
+        assert "done" in types or "error" in types, f"No terminal event. Types: {types}"
 
     def test_run_task_with_repo(self, dispatcher) -> None:
         """The dispatcher should pass repo_url/ref through to the sandbox."""
@@ -103,10 +106,9 @@ class TestDispatcherRunTask:
 
         # Should see repo files in the output
         output = done["final_text"].lower()
-        assert any(
-            name in output
-            for name in ["readme", "pyproject", "claude.md", "makefile"]
-        ), f"Expected repo files, got: {done['final_text'][:300]}"
+        assert any(name in output for name in ["readme", "pyproject", "claude.md", "makefile"]), (
+            f"Expected repo files, got: {done['final_text'][:300]}"
+        )
 
 
 class TestDispatcherCommit:

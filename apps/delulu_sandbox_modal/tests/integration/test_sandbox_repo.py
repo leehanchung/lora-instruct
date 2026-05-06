@@ -106,10 +106,9 @@ class TestRunWithRepo:
 
         # The SMILE-factory repo should have at least a README or pyproject.toml
         output = done["final_text"].lower()
-        assert any(
-            name in output
-            for name in ["readme", "pyproject", "claude.md", "makefile"]
-        ), f"Expected repo files in output, got: {done['final_text'][:300]}"
+        assert any(name in output for name in ["readme", "pyproject", "claude.md", "makefile"]), (
+            f"Expected repo files in output, got: {done['final_text'][:300]}"
+        )
 
 
 class TestCommitWorkspace:

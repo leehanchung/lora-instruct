@@ -78,9 +78,7 @@ class TestEventStream:
             assert "tool_use" in types, (
                 f"Expected tool_use events for a file-write prompt. Got: {types}"
             )
-            assert "tool_result" in types, (
-                f"Expected tool_result events. Got: {types}"
-            )
+            assert "tool_result" in types, f"Expected tool_result events. Got: {types}"
 
     def test_all_events_have_type_field(
         self,
@@ -146,8 +144,7 @@ class TestResume:
             run_claude_code_fn.remote_gen(
                 session_id="smoke-resume-1",
                 prompt=(
-                    "Remember this: the secret code is DOLPHIN-42. "
-                    "Acknowledge by saying 'Noted'."
+                    "Remember this: the secret code is DOLPHIN-42. Acknowledge by saying 'Noted'."
                 ),
                 thread_id=unique_thread_id,
             )

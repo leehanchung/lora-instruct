@@ -9,6 +9,14 @@ name: delulu e2e
 #
 # Manual trigger (workflow_dispatch) is available for ad-hoc runs
 # after a deploy or config change.
+#
+# Why ``-m integration`` is on every pytest call: each app's
+# ``pyproject.toml`` sets ``addopts = "-m 'not integration'"`` so
+# local ``uv run pytest`` skips the slow Modal-touching tests by
+# default. CI overrides that with an explicit positive marker —
+# without ``-m integration`` the addopts deselects every test in
+# ``tests/integration/`` and the job silently passes with zero
+# tests run.
 
 on:
   schedule:
@@ -39,15 +47,22 @@ jobs:
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
         run: |
           uv run pytest tests/integration/ -v \
+            -m integration \
             --timeout=180 \
             --tb=short \
             -x
 
-  # Dispatcher tests need both delulu_discord and delulu_sandbox_modal
-  # installed so the import of SandboxDispatcher resolves.
+  # Dispatcher tests live in apps/delulu_discord — the dispatcher is
+  # a bot-side type and the sandbox-side import boundary forbids
+  # ``delulu_sandbox_modal`` from importing ``delulu_discord``. Keeping
+  # the test there means a normal local import, no cross-app venv
+  # install, and the boundary stays clean.
   e2e-dispatcher:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/delulu_discord
     steps:
       - uses: actions/checkout@v4
 
@@ -55,18 +70,16 @@ jobs:
         with:
           enable-cache: true
 
-      - name: install sandbox + discord packages
-        run: |
-          cd apps/delulu_sandbox_modal && uv sync --extra dev
-          cd ../delulu_discord && uv sync --extra dev
+      - name: install deps
+        run: uv sync --extra dev
 
       - name: run dispatcher integration tests
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
         run: |
-          cd apps/delulu_sandbox_modal
           uv run pytest tests/integration/test_dispatcher.py -v \
+            -m integration \
             --timeout=180 \
             --tb=short \
             -x
