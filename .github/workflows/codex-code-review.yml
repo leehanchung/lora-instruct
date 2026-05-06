@@ -332,7 +332,68 @@ jobs:
           app-id: ${{ secrets.CODEX_APP_ID }}
           private-key: ${{ secrets.CODEX_APP_PRIVATE_KEY }}
 
+      - name: Snapshot bot's existing unresolved review threads
+        # Captures the IDs of currently-unresolved threads authored
+        # by THIS bot BEFORE the new review posts. The post-Submit
+        # step resolves these snapshotted IDs — i.e. only threads
+        # that existed before the new run, never threads that the
+        # new review just created. Without this snapshot/resolve
+        # split a fresh review's brand-new findings would be
+        # auto-resolved within seconds of being posted.
+        #
+        # The bot login is `<app-slug>[bot]` — actions/create-
+        # github-app-token exposes `app-slug` as a step output,
+        # so we don't have to hardcode it.
+        id: snapshot
+        if: >-
+          steps.run_codex.conclusion == 'success'
+          && steps.run_codex.outputs.output-file != ''
+          && steps.app_token.conclusion == 'success'
+          && steps.app_token.outputs.token != ''
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          BOT_LOGIN: ${{ steps.app_token.outputs.app-slug }}[bot]
+        run: |
+          set -euo pipefail
+
+          SNAPSHOT_FILE="$RUNNER_TEMP/codex-thread-snapshot.txt"
+
+          # GraphQL: list this PR's review threads + the first
+          # comment author of each. We only resolve threads we
+          # authored, so an unrelated reviewer (Claude, a human)
+          # is never touched.
+          gh api graphql -f query='
+            query($owner: String!, $repo: String!, $pr: Int!) {
+              repository(owner: $owner, name: $repo) {
+                pullRequest(number: $pr) {
+                  reviewThreads(first: 100) {
+                    nodes {
+                      id
+                      isResolved
+                      comments(first: 1) {
+                        nodes { author { login } }
+                      }
+                    }
+                  }
+                }
+              }
+            }' \
+            -F owner="${{ github.repository_owner }}" \
+            -F repo="${{ github.event.repository.name }}" \
+            -F pr=${{ github.event.pull_request.number }} \
+            | jq -r --arg bot "$BOT_LOGIN" '
+              .data.repository.pullRequest.reviewThreads.nodes[]
+              | select(.isResolved == false)
+              | select(.comments.nodes[0].author.login == $bot)
+              | .id' \
+            > "$SNAPSHOT_FILE"
+
+          COUNT=$(wc -l < "$SNAPSHOT_FILE" | tr -d ' ')
+          echo "Snapshotted $COUNT unresolved thread(s) from $BOT_LOGIN"
+          echo "snapshot-file=$SNAPSHOT_FILE" >> "$GITHUB_OUTPUT"
+
       - name: Submit review
+        id: submit
         # Same rationale as the Mint step: we gate on per-step
         # conclusions, NOT `success()`. `success()` would include
         # the Persist step (`if: always()`) and a transient
@@ -392,3 +453,52 @@ jobs:
             -f event="$EVENT" \
             -f body="$BODY" \
             --jq '.html_url'
+
+      - name: Resolve snapshotted prior threads
+        # Branch protection requires all conversations resolved
+        # before merge. After every successful review post, walk
+        # the snapshot from the pre-Submit step and resolve each
+        # thread — these are by definition the bot's own threads
+        # from earlier runs (the snapshot was taken BEFORE the
+        # new review's threads existed). The user's PRs unblock
+        # automatically as soon as the bot agrees the new commit
+        # addressed the prior feedback.
+        #
+        # Idempotent on already-resolved threads (the GraphQL
+        # mutation is a no-op there). A failure to resolve a
+        # specific thread is non-fatal — we log and continue,
+        # because a partial resolve is still useful and the
+        # alternative (failing the workflow) would prevent the
+        # actual review from being merged.
+        if: >-
+          steps.submit.conclusion == 'success'
+          && steps.snapshot.outputs.snapshot-file != ''
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          SNAPSHOT_FILE: ${{ steps.snapshot.outputs.snapshot-file }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -s "$SNAPSHOT_FILE" ]; then
+            echo "No prior threads to resolve."
+            exit 0
+          fi
+
+          OK=0
+          FAIL=0
+          while IFS= read -r THREAD_ID; do
+            [ -z "$THREAD_ID" ] && continue
+            if gh api graphql -f query='
+                mutation($id: ID!) {
+                  resolveReviewThread(input: {threadId: $id}) {
+                    thread { id isResolved }
+                  }
+                }' -f id="$THREAD_ID" >/dev/null 2>&1; then
+              OK=$((OK + 1))
+            else
+              FAIL=$((FAIL + 1))
+              echo "warning: failed to resolve thread $THREAD_ID"
+            fi
+          done < "$SNAPSHOT_FILE"
+
+          echo "Resolved $OK prior thread(s); $FAIL failure(s)."
