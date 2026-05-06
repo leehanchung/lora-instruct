@@ -17,8 +17,6 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from unittest.mock import MagicMock
-
 import pytest
 
 
@@ -72,7 +70,7 @@ class TestDispatcherRunTask:
                 events.append(event)
             return events
 
-        events = asyncio.get_event_loop().run_until_complete(_run())
+        events = asyncio.run(_run())
 
         assert len(events) > 0, "Dispatcher yielded no events"
         types = [e["type"] for e in events]
@@ -96,7 +94,7 @@ class TestDispatcherRunTask:
                 events.append(event)
             return events
 
-        events = asyncio.get_event_loop().run_until_complete(_run())
+        events = asyncio.run(_run())
 
         done = next((e for e in events if e["type"] == "done"), None)
         if done is None:
@@ -130,7 +128,7 @@ class TestDispatcherCommit:
                 message="test commit from dispatcher",
             )
 
-        result = asyncio.get_event_loop().run_until_complete(_run())
+        result = asyncio.run(_run())
 
         assert isinstance(result, dict)
         assert "status" in result
