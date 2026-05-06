@@ -73,7 +73,7 @@ class MessageHandler:
             else:
                 is_private = False
 
-        session = self.sessions.create_session(
+        session = await self.sessions.create_session(
             thread.id,
             repo_url=repo_url,
             ref=ref,
@@ -101,7 +101,7 @@ class MessageHandler:
         thread = message.channel
         assert isinstance(thread, discord.Thread)
 
-        session, is_new = self.sessions.get_or_create(thread.id)
+        session, is_new = await self.sessions.get_or_create(thread.id)
         resume = not is_new
         attachments = await _download_attachments(message)
 

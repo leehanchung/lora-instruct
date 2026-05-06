@@ -5,6 +5,11 @@ BOT_NAME   ?= disco
 IMAGE      ?= delulu-discord
 ENV_FILE   ?= /root/disco.env
 MODAL_TOML ?= /root/.modal.toml
+# Named Docker volume for the bot's persistent state (currently the
+# SQLite session DB at /data/sessions.db inside the container).
+# Survives `docker rm` so /setrepo bindings + thread sessions stick
+# across deploys. Created automatically by Docker on first run.
+DATA_VOLUME ?= disco-data
 
 help:
 	@echo "Targets (VPS deploy):"
@@ -51,6 +56,7 @@ restart:
 	  --restart=unless-stopped \
 	  --env-file $(ENV_FILE) \
 	  -v $(MODAL_TOML):/root/.modal.toml:ro \
+	  -v $(DATA_VOLUME):/data \
 	  $(IMAGE)
 
 deploy: image restart
