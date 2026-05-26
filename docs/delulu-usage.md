@@ -298,7 +298,7 @@ The channel's binding isn't being applied. Three things to check:
    retroactively pick one up. Start a fresh `@delulu` mention at
    the channel root.
 3. **Did the bot restart recently?** There's a known bug tracked
-   in [`prd/setrepo-persistence-bug.md`](../prd/setrepo-persistence-bug.md)
+   in [`apps/delulu_discord/prd/setrepo-persistence-bug.md`](../apps/delulu_discord/prd/setrepo-persistence-bug.md)
    where bindings can be lost across bot restarts. If you saw the
    bot container cycle recently, re-run `/setrepo` and try again.
 
@@ -386,7 +386,7 @@ timeouts) will show up there as a traceback.
 
 ## Known limitations (v1)
 
-Documented in the PRD at [`prd/repo-provisioning.md`](../prd/repo-provisioning.md)
+Documented in the PRD at [`apps/delulu_discord/prd/repo-provisioning.md`](../apps/delulu_discord/prd/repo-provisioning.md)
 under "Out of scope — park for v2":
 
 - **Public repos only.** Cloning private repos requires
@@ -399,7 +399,7 @@ under "Out of scope — park for v2":
   accumulate indefinitely. The volume is big enough to not care
   for now, but eventually a TTL or manual cleanup is needed.
 - **`/setrepo` doesn't persist across bot restarts** — see
-  [`prd/setrepo-persistence-bug.md`](../prd/setrepo-persistence-bug.md).
+  [`apps/delulu_discord/prd/setrepo-persistence-bug.md`](../apps/delulu_discord/prd/setrepo-persistence-bug.md).
   Workaround: re-run `/setrepo` after the bot restarts.
 - **Global provisioning serialization.** Cold clones on different
   repos queue up behind each other via `@app.function(max_containers=1)`
@@ -410,7 +410,7 @@ under "Out of scope — park for v2":
 
 - **Architecture questions** → [`ARCHITECTURE.md`](../ARCHITECTURE.md)
 - **Deployment questions** → [`README.md`](../README.md)
-- **Design decisions** → the PRDs under [`prd/`](../prd/)
+- **Design decisions** → the PRDs under [`apps/delulu_discord/prd/`](../apps/delulu_discord/prd/) and [`apps/delulu_sandbox_modal/prd/`](../apps/delulu_sandbox_modal/prd/)
 - **Anything going wrong** → `journalctl -f CONTAINER_NAME=disco` on
   the droplet (or `make -C apps/delulu_discord logs`) is the single
   best source of truth for what the bot is doing. The bot ships

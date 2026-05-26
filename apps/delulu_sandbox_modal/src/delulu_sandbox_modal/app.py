@@ -223,7 +223,7 @@ def _flatten_stream_event(
 # filesystem lock primitive (flock, mkdir, link) provides cross-
 # container atomicity on Modal Volumes, so concurrency has to live at
 # Modal's orchestration layer instead. See the "Concurrency" section
-# of `prd/repo-provisioning.md` for the full rationale.
+# of `apps/delulu_discord/prd/repo-provisioning.md` for the full rationale.
 #
 # The image intentionally omits nodejs/claude-code — this function
 # only needs git, and reusing `sandbox_image` would pull in the
@@ -380,7 +380,8 @@ def commit_workspace(thread_id: int, message: str) -> dict[str, Any]:
     ``GITHUB_TOKEN`` env var (from the github-pat secret) is empty
     or missing. **No local commit is made in that case** — refuse-
     and-instruct semantics, decided in
-    ``prd/repo-provisioning.md``'s "Commit-back flow" section.
+    ``apps/delulu_discord/prd/repo-provisioning.md``'s "Commit-back flow"
+    section.
 
     Returns a dict (not a dataclass — Modal needs JSON-serializable
     return values) with one of these shapes:
@@ -469,7 +470,7 @@ def commit_workspace(thread_id: int, message: str) -> dict[str, Any]:
 # invocation, not just `commit_workspace`. A rogue/prompt-injected
 # Claude has access to anything the PAT can do on the allowlisted
 # repos. For the v1 single-user scope this is acceptable; see
-# `prd/repo-provisioning.md`'s access-control section for why the
+# `apps/delulu_discord/prd/repo-provisioning.md`'s access-control section for why the
 # allowlist + narrow PAT scope is the primary defense.
 @app.function(
     image=sandbox_image,

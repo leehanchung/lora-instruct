@@ -21,6 +21,14 @@ scripts/job_postings/
 .vscode
 .brev
 
+# Local Claude/Codex state
+.claude/settings.local.json
+.claude/worktrees/
+
+# macOS Finder metadata
+.DS_Store
+**/.DS_Store
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
