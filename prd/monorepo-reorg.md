@@ -1,14 +1,14 @@
 # Monorepo reorganization
 
-**Status:** in-progress
+**Status:** complete — waves 0–5 and 7 done; optional Wave 6 deferred
 
 Plan to reshape the repo root from its two-era layout (LoRA-Instruct
 files scattered at root + tidy `apps/` tree for delulu) into a
 category-first monorepo structure that scales to many projects.
 
-This was a *plan*; most of it is now executed. Waves 0–5 are resolved
-(see the per-wave notes and summary table below). Only the optional
-Wave 6 (`apps/delulu/` grouping) and the final Wave 7 tidy remain.
+This was a *plan*; it is now essentially complete. Waves 0–5 and 7 are
+done (see the per-wave notes and summary table below). The optional Wave 6
+(`apps/delulu/` grouping) is deliberately deferred — see Q5.
 
 ## Context / problem
 
@@ -153,7 +153,7 @@ know the target shape. Key rules:
 | Q2 | Is `scripts/job_postings` LoRA-owned or general? | Wave 4 | ✅ answered: general (AI-trainer job scrapers, unrelated to LoRA) → `data/scrapers/` |
 | Q3 | Is LoRA-Instruct active or archived? | Wave 3 | ✅ answered: active → `training/lora_instruct/` |
 | Q4 | Does LoRA get its own `pyproject.toml`? | Wave 3 | ✅ answered: yes (matches `apps/` pattern) |
-| Q5 | Regroup `apps/delulu_*` into `apps/delulu/{discord,sandbox_modal}/`? | Wave 6 | ⏳ open — optional; deploy-path-filter risk, can skip |
+| Q5 | Regroup `apps/delulu_*` into `apps/delulu/{discord,sandbox_modal}/`? | Wave 6 | ✅ answered: **defer**. Only two delulu apps today; the grouping mainly pays off at more apps, and it's the one change that rewires the bot's deploy path-filters. Risk > benefit now — revisit when a third delulu app lands. |
 
 ## Wave-by-wave plan
 
@@ -282,7 +282,11 @@ real deployable, leaning app.
 
 ### Wave 6 — `apps/delulu/` grouping layer
 
-**Blocked on Q5 (optional — skip if no).**
+**Status: ⏸ deferred (Q5 = defer).** Optional, and the only wave that
+rewires the bot's production deploy path-filters. With just two delulu
+apps the grouping buys little; revisit when a third app lands. If taken
+later, it's the full plan below — done as its own PR with the path-filter
+verification step.
 
 Higher-risk PR: touches workflows, Dockerfile contexts, PRDs, pre-commit
 config. This is the only wave with real operational risk — deploys are
@@ -313,6 +317,15 @@ driven by path filters.
 
 ### Wave 7 — per-project CLAUDE.md + root cleanup
 
+**Status: ✅ shipped.** Added `apps/delulu_discord/CLAUDE.md` and
+`apps/delulu_sandbox_modal/CLAUDE.md` (project-scoped commands + gotchas);
+root `CLAUDE.md` Quick Reference now points at them. The Wave 2 rules were
+added without a "reorg in progress" caveat, so there's none to remove. Done
+at the current `apps/delulu_*` paths since Wave 6 is deferred; the files
+git-mv with their app if Wave 6 is taken later. `ARCHITECTURE.md` already
+references current paths (`apps/delulu_discord`, `training/lora_instruct`),
+so no layout rewrite was needed.
+
 - **PR** — `docs: add per-project CLAUDE.md files`
   - Add `apps/delulu/discord/CLAUDE.md` and
     `apps/delulu/sandbox_modal/CLAUDE.md` (project-scoped commands and
@@ -332,8 +345,8 @@ driven by path filters.
 | 3 | 1 | — | none | ✅ |
 | 4 | 1 | Q2 ✅ | none | ✅ |
 | 5 | 1 | Q1 ✅ | low–medium | ✅ stays in `infra/` |
-| 6 | 1 | Q5 (optional) | medium (deploys) | ⏳ open — decide go/skip |
-| 7 | 1 | waves 3–6 done | none | ⏳ pending wave 6 decision |
+| 6 | 1 | Q5 (optional) | medium (deploys) | ⏸ deferred |
+| 7 | 1 | waves 3–6 done | none | ✅ (at current `apps/delulu_*` paths) |
 
 **Total: ~8 PRs** once Q1–Q5 are answered. Waves 1 and 2 can start
 immediately — they don't depend on any open question.

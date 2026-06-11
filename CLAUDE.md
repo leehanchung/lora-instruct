@@ -6,7 +6,7 @@ SMILE-factory is a multi-project monorepo. The active project is **delulu**, a D
 
 Each project owns its own Makefile and tooling — there is no repo-wide `poetry`/`pytest`. Use the per-project entrypoints:
 
-- **Delulu (active)**: `make -C apps/delulu_discord check` (lint + test), `make -C apps/delulu_discord deploy`, `make -C apps/delulu_sandbox_modal modal-deploy`. Top-level shortcuts: `make check`, `make deploy-bot`, `make deploy-modal`, `make deploy-all`.
+- **Delulu (active)** — two apps, each with its own project `CLAUDE.md`: [`apps/delulu_discord`](apps/delulu_discord/CLAUDE.md) (the bot) and [`apps/delulu_sandbox_modal`](apps/delulu_sandbox_modal/CLAUDE.md) (the Modal sandbox). Quick: `make -C apps/delulu_discord check`, `make -C apps/delulu_sandbox_modal modal-deploy`. Top-level shortcuts: `make check`, `make deploy-bot`, `make deploy-modal`, `make deploy-all`.
 - **LoRA-Instruct training**: see [`training/lora_instruct/CLAUDE.md`](training/lora_instruct/CLAUDE.md) for setup, lint, test, and training commands — they no longer live at the repo root.
 
 ## Working in the monorepo
