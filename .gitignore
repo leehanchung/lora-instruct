@@ -14,7 +14,6 @@ out/
 lora-redpajama/
 
 # Scraped job data
-scripts/job_postings/
 data/scrapers/job_postings/
 
 # Dev environment files

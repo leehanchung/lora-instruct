@@ -21,8 +21,6 @@ poetry run ruff check --fix .
 poetry run pytest
 ```
 
-Note: test coverage is configured in `tox.ini` but currently commented out.
-
 ## Training
 
 ```bash

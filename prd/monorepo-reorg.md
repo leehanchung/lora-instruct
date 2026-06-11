@@ -6,8 +6,9 @@ Plan to reshape the repo root from its two-era layout (LoRA-Instruct
 files scattered at root + tidy `apps/` tree for delulu) into a
 category-first monorepo structure that scales to many projects.
 
-This is a *plan*, not a spec of implemented behavior. Nothing in this
-document has been executed yet.
+This was a *plan*; most of it is now executed. Waves 0–5 are resolved
+(see the per-wave notes and summary table below). Only the optional
+Wave 6 (`apps/delulu/` grouping) and the final Wave 7 tidy remain.
 
 ## Context / problem
 
@@ -148,11 +149,11 @@ know the target shape. Key rules:
 
 | Q | Question | Blocks | Default if unanswered |
 |---|---|---|---|
-| Q1 | What is `infra/managed-agents/`? App, infra, or project? | Wave 5 | stays in `infra/` |
-| Q2 | Is `scripts/job_postings` LoRA-owned or general? | Wave 4 | folded into Wave 3 as LoRA data |
+| Q1 | What is `infra/managed-agents/`? App, infra, or project? | Wave 5 | ✅ answered: infra — a self-deployed Firecracker/k8s agent platform, not wired into this repo's CI/CD. Stays in `infra/`. |
+| Q2 | Is `scripts/job_postings` LoRA-owned or general? | Wave 4 | ✅ answered: general (AI-trainer job scrapers, unrelated to LoRA) → `data/scrapers/` |
 | Q3 | Is LoRA-Instruct active or archived? | Wave 3 | ✅ answered: active → `training/lora_instruct/` |
 | Q4 | Does LoRA get its own `pyproject.toml`? | Wave 3 | ✅ answered: yes (matches `apps/` pattern) |
-| Q5 | Regroup `apps/delulu_*` into `apps/delulu/{discord,sandbox_modal}/`? | Wave 6 | yes (scales better; can skip) |
+| Q5 | Regroup `apps/delulu_*` into `apps/delulu/{discord,sandbox_modal}/`? | Wave 6 | ⏳ open — optional; deploy-path-filter risk, can skip |
 
 ## Wave-by-wave plan
 
@@ -170,6 +171,12 @@ Not new work; gates everything downstream.
 
 ### Wave 1 — cheap cleanups (no structural moves)
 
+**Status: ✅ shipped.** Root `uv.lock` (orphan) and `tox.ini` (legacy)
+deleted; the stale `tox.ini` mention in `docs/development.md` removed. The
+`CLAUDE.md` and `README.md` monorepo-identity one-liners were already in
+place. The `Research/`/`research/` dir is untracked + empty, so there is
+nothing for git to delete.
+
 All safe, all reversible, no path dependencies. Two PRs:
 
 - **PR** — `chore: remove vestigial root files`
@@ -184,6 +191,10 @@ All safe, all reversible, no path dependencies. Two PRs:
   - *Standalone, doesn't depend on any moves.*
 
 ### Wave 2 — declare the target layout
+
+**Status: ✅ shipped.** The "Working in the monorepo" section is in root
+`CLAUDE.md`. The reorg being essentially complete, it was added without the
+temporary "*reorg in progress*" caveat (which Wave 7 would only remove).
 
 - **PR** — `docs: add monorepo working rules to CLAUDE.md`
   - Add the "Working in the monorepo" section to root `CLAUDE.md`.
@@ -230,9 +241,13 @@ repo.*
 
 ### Wave 4 — data scrapers
 
-**Blocked on Q2.**
+**Status: ✅ shipped.** Q2 answered: the scrapers are general-purpose
+job-posting scrapers (AI-trainer / annotation roles), not LoRA code.
+`scripts/{scrape_ai_trainer_jobs,job_data}.py` moved to `data/scrapers/`;
+the gitignore entry updated to `data/scrapers/job_postings/`; empty
+`scripts/` removed.
 
-If LoRA-owned → fold into Wave 3 and skip this wave. If general:
+Original plan (now executed):
 
 - **PR** — `refactor: move job scrapers under data/scrapers`
   - `git mv scripts/job_postings/ data/scrapers/job_postings/`
@@ -242,7 +257,16 @@ If LoRA-owned → fold into Wave 3 and skip this wave. If general:
 
 ### Wave 5 — `infra/managed-agents/` classification
 
-**Blocked on Q1.** Three branches depending on the answer:
+**Status: ✅ resolved — stays put.** Q1 answered: `infra/managed-agents/`
+is a self-contained managed-agents platform (Firecracker microVMs, its own
+k8s/Helm control plane, Dockerfiles, harnesses) that deploys via its own
+tooling and is **not referenced by this repo's CI, Makefile, or
+pre-commit**. It is infra, not an app of this monorepo, and moving it earns
+nothing while risking its self-deploy wiring. Left in place. The optional
+hyphen→underscore rename is also unnecessary — it uses a `src/` layout and
+isn't imported by directory name.
+
+Original branches (not taken):
 
 - **If app:** `refactor: move managed-agents to apps/` — add its own
   `CLAUDE.md`, verify deploy wiring still works.
@@ -303,13 +327,13 @@ driven by path filters.
 | Wave | PRs | Blocked on | Operational risk | Status |
 |---|---|---|---|---|
 | 0 | #20, #21 merge | — | none | ✅ |
-| 1 | 2 | — | none | |
-| 2 | 1 | — | none | |
+| 1 | 2 | — | none | ✅ |
+| 2 | 1 | — | none | ✅ |
 | 3 | 1 | — | none | ✅ |
-| 4 | 1 | Q2 | none | |
-| 5 | 1 | Q1 | low–medium | |
-| 6 | 1 | Q5 (optional) | medium (deploys) | |
-| 7 | 1 | waves 3–6 done | none | |
+| 4 | 1 | Q2 ✅ | none | ✅ |
+| 5 | 1 | Q1 ✅ | low–medium | ✅ stays in `infra/` |
+| 6 | 1 | Q5 (optional) | medium (deploys) | ⏳ open — decide go/skip |
+| 7 | 1 | waves 3–6 done | none | ⏳ pending wave 6 decision |
 
 **Total: ~8 PRs** once Q1–Q5 are answered. Waves 1 and 2 can start
 immediately — they don't depend on any open question.
