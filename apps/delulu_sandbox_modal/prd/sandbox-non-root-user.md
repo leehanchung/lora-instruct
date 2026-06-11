@@ -1,5 +1,7 @@
 # Run the Modal sandbox as a non-root user
 
+**Status:** parked
+
 Followup to PRs #53 and #54. Park for later — not urgent today.
 
 This is a *plan*, not a spec of implemented behavior. Nothing in this

@@ -1,5 +1,7 @@
 # Codex CLI auth in CI/CD via ChatGPT account
 
+**Status:** v1-shipped · v2-parked
+
 Plan to authenticate the Codex CLI inside this repo's GitHub Actions
 workflows using a ChatGPT account session (`auth.json`) rather than an
 `OPENAI_API_KEY`. The motivation is cost: usage on a ChatGPT

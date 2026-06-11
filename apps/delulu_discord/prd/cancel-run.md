@@ -1,5 +1,7 @@
 # Cancel a running dispatch
 
+**Status:** not-started
+
 Implementation plan for letting a user interrupt a Claude Code run
 that's in flight from the Discord side.
 
@@ -80,9 +82,10 @@ lifecycle concerns.
 
 Status message posts as it does today, with an extra UI element
 attached (button / reaction / nothing, depending on choice above).
-The rest of the live-rendering pipeline from `prd/streaming.md` is
-unchanged — tool calls still stream in at 1 edit/sec, thinking
-blocks still collapse to a spoiler.
+The rest of the live-rendering pipeline from the streaming
+renderer (shipped — its PRD was removed) is unchanged — tool
+calls still stream in at 1 edit/sec, thinking blocks still
+collapse to a spoiler.
 
 ### On cancel
 
@@ -100,7 +103,8 @@ blocks still collapse to a spoiler.
 
 ### On natural completion (no cancel)
 
-Same as today's plan from `prd/streaming.md`: status footer becomes
+Same as today's plan from the streaming renderer (shipped — its
+PRD was removed): status footer becomes
 `✅ Done • N tools • Ts`, final text posts as a separate message,
 button (if present) is removed or disabled by hitting `view.stop()`.
 

@@ -1,5 +1,7 @@
 # Private GitHub repo support for delulu
 
+**Status:** v1-shipped · v2-parked
+
 Extension of the repo-provisioning v1 plan
 (`apps/delulu_discord/prd/repo-provisioning.md`) to cover private
 GitHub repos. v1 explicitly deferred this — the clone path is
@@ -165,6 +167,10 @@ def _git_with_auth(args: list[str], pat: str | None) -> list[str]:
 - Allowlist entries grow a `visibility: "public" | "private"`
   field. Storage shape change: `list[str]` → `list[dict]` or
   `dict[str, str]` keyed by `owner/repo`. Latter is cleaner.
+- **Sequencing:** land this schema change *after* the persistence fix
+  in `setrepo-persistence-bug.md`. The allowlist store is the same
+  `modal.Dict` whose `.aio` put-path may be silently dropping writes;
+  shipping the `visibility` marker first would let it inherit that bug.
 - Backward compatibility: on read, treat any bare `str` entry as
   `{"visibility": "public"}` (these are the v1 entries that
   predate the marker). New entries always carry the marker.

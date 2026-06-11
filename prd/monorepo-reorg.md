@@ -1,5 +1,7 @@
 # Monorepo reorganization
 
+**Status:** in-progress
+
 Plan to reshape the repo root from its two-era layout (LoRA-Instruct
 files scattered at root + tidy `apps/` tree for delulu) into a
 category-first monorepo structure that scales to many projects.

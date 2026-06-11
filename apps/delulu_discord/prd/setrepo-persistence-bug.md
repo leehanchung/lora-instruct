@@ -1,5 +1,7 @@
 # `/setrepo` binding lost after bot restart
 
+**Status:** bug-open
+
 Known regression in the repo-provisioning v1 feature set, surfaced
 by the post-ship smoke test of Phases 1–4. Writeup here so the bug
 is tracked until we have bandwidth to chase it properly — fix is
