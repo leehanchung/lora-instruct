@@ -35,9 +35,14 @@ Lower review priority unless the PR explicitly touches it.
 - The only changes are under `prd/` (planning docs)
 - The only changes are documentation wording fixes
 
-If skipping, post a one-line "skipped — reason" comment via
-`gh api repos/{owner}/{repo}/pulls/<N>/reviews --method POST -f event=COMMENT -f body="Skipped — <reason>"`.
-Then stop.
+If skipping, there is no production code to object to, so the PR is
+fine to merge as far as this reviewer is concerned. **Submit an
+approving review** (not a bare comment) so it counts toward the
+required approvals instead of leaving the PR stuck on "Review
+required":
+`gh api repos/{owner}/{repo}/pulls/<N>/reviews --method POST -f event=APPROVE -f body="Approving — skipped detailed review (<reason>; prd/docs only)."`
+If that fails with "cannot approve your own pull request", retry once
+with `event=COMMENT`. Then stop.
 
 ## Step 2 — Gather context
 
@@ -93,8 +98,8 @@ Use the `Write` tool for both files. **Do not use shell heredoc.**
 ```markdown
 ## Review summary
 
-<one-sentence verdict: "LGTM", "minor observations", or
-"flagging N issues for human review">
+<one-sentence verdict: "LGTM" or "minor non-blocking notes" (both
+approve) — or "flagging N issue(s) for human review" (comment)>
 
 ## Deployment
 
@@ -128,19 +133,35 @@ If there are no findings, write `{"comments": []}`.
 
 **Advisory only — never `REQUEST_CHANGES`.**
 
+**Default to APPROVE.** `main` requires approving reviews, so a clean
+review that only leaves a COMMENT forces a needless human
+self-approval. Decide the event from your *findings*, not your tone:
+
+- **APPROVE** — `/tmp/review_comments.json` has zero inline findings
+  **and** the body raises no blocking concern. "LGTM" and "minor
+  non-blocking notes" both approve.
+- **COMMENT** — there is at least one inline finding, **or** you are
+  putting a substantive concern a human must weigh in the body.
+
+Derive the event from the findings file so the choice isn't left to
+tone, then submit one atomic review:
+
 ```bash
 REVIEW_BODY=$(cat /tmp/review.md)
+if [ "$(jq '.comments | length' /tmp/review_comments.json)" -eq 0 ]; then
+  EVENT=APPROVE   # nothing flagged inline → approve. Override to
+                  # COMMENT only if REVIEW_BODY raises a blocking concern.
+else
+  EVENT=COMMENT
+fi
 gh api \
   "repos/{owner}/{repo}/pulls/<N>/reviews" \
   --method POST \
-  -f event="APPROVE" \
+  -f event="$EVENT" \
   -f body="$REVIEW_BODY" \
   --input /tmp/review_comments.json \
   --jq '.html_url'
 ```
-
-- No substantive issues → `event=APPROVE`
-- Issues or observations → `event=COMMENT`
 
 **Never retry on failure.** One attempt, one outcome.
 
