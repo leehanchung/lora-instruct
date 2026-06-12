@@ -33,9 +33,13 @@ name: Codex Code Review
 #
 #   - Droplet unreachable on entry  → fall back to CODEX_AUTH_JSON
 #     seed for this run; persist back will retry on the next run.
-#   - codex auth fails (expired token, etc.) → re-run `codex login`
-#     locally and overwrite the GitHub secret. The next run will
-#     reseed the droplet from the fresh secret.
+#   - codex auth fails (expired token / reused refresh token) → the
+#     Run Codex step detects the auth signature and SKIPS the review
+#     with a ::warning:: instead of failing the job, so this required
+#     check doesn't red-block every merge during a credential outage.
+#     To restore: re-run `codex login` locally, overwrite the
+#     CODEX_AUTH_JSON secret, and refresh (or delete) the droplet copy
+#     so the next run reseeds from the fresh secret.
 #   - Persist back fails → the job FAILS LOUDLY (no `|| true`).
 #     Silent persist failure is what the PRD §"Risks: token drift"
 #     warns against — better to fail one PR and notice than ship a
@@ -266,12 +270,38 @@ jobs:
           # commit tried `--sandbox danger-full-access` to save
           # tokens; codex itself reviewed that commit and called
           # out the credential-exfiltration risk — reverted.)
+          # Capture codex's own exit code + combined output so we can
+          # tell an expired-auth failure (a credential outage that must
+          # NOT red-block every PR) apart from a genuine review failure.
+          CODEX_LOG="$RUNNER_TEMP/codex-run.log"
+          set +e
           codex exec \
             --skip-git-repo-check \
             --sandbox workspace-write \
             --model gpt-5.5 \
             --output-last-message "$OUT_FILE" \
-            "$PROMPT"
+            "$PROMPT" 2>&1 | tee "$CODEX_LOG"
+          RC=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$RC" -ne 0 ]; then
+            # ChatGPT-account OAuth tokens are single-use on refresh and
+            # expire on an ~8-day window. When the stored auth.json drifts
+            # (refresh token already consumed) or fully expires, codex
+            # exits non-zero with one of these signatures. That's an auth
+            # outage, not a bad PR — and "Codex PR review" is a *required*
+            # check, so failing here blocks merges repo-wide. Degrade to a
+            # visible no-op instead: skip the review, keep the check green,
+            # and tell the maintainer how to re-auth.
+            if grep -qiE 'refresh_token_reused|token_expired|Failed to refresh token|authentication token is expired|access token could not be refreshed|401 Unauthorized' "$CODEX_LOG"; then
+              echo "::warning title=Codex auth expired::Codex could not authenticate (ChatGPT token expired or refresh token already used); this review was skipped WITHOUT blocking the PR. To restore: run 'codex login' locally, overwrite the CODEX_AUTH_JSON repo secret with the fresh ~/.codex/auth.json, and refresh /root/.codex-ci/auth.json on the droplet (or delete it so the next run reseeds from the secret)."
+              # Leave output-file unset so the Mint/Submit steps skip and
+              # the job still succeeds (no review posted, no red check).
+              exit 0
+            fi
+            echo "::error::codex exec failed (exit $RC) for a non-auth reason; see the log above."
+            exit 1
+          fi
 
           # Hand the result to the Submit step via the file on
           # $RUNNER_TEMP (which persists across steps in the same
