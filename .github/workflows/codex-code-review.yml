@@ -349,7 +349,7 @@ jobs:
             codex exec \
               --skip-git-repo-check \
               --sandbox workspace-write \
-              --model "${CODEX_API_MODEL:-gpt-5-codex}" \
+              --model "${CODEX_API_MODEL:-gpt-4.1}" \
               --output-last-message "$OUT_FILE" \
               "$PROMPT" 2>&1 | tee -a "$CODEX_LOG"
           else
