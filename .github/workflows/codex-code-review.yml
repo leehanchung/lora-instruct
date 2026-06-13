@@ -1,8 +1,13 @@
 name: Codex Code Review
 
-# Reviews each PR via the OpenAI Codex CLI authenticated against the
-# repo owner's ChatGPT account (NOT an OPENAI_API_KEY). Cost lives on
-# the ChatGPT plan rather than per-token API billing.
+# Reviews each PR via the OpenAI Codex CLI. Two auth modes, chosen by
+# the "Decide auth mode" step:
+#   - If the OPENAI_API_KEY secret is set → API-key auth (OpenAI's
+#     recommended CI auth: static key, no rotating refresh token, no
+#     droplet, no sibling-client breakage; metered per-token billing).
+#   - Otherwise → the repo owner's ChatGPT account via auth.json,
+#     billed on the ChatGPT plan. That path is described below; it
+#     needs the droplet/secret token plumbing the API-key path skips.
 #
 # Auth lifecycle (see prd/codex-ci-auth.md for the full design):
 #
@@ -89,7 +94,28 @@ jobs:
             "$PR_BASE_REF" \
             "+refs/pull/$PR_NUMBER/head"
 
+      - name: Decide auth mode
+        # If the OPENAI_API_KEY secret is set, authenticate with it
+        # (OpenAI's recommended CI auth — static key, no rotating
+        # refresh token, no droplet, no sibling-client breakage). Else
+        # fall back to the ChatGPT-account auth.json path below. Fork
+        # PRs don't receive secrets, so an untrusted external PR sees
+        # neither credential and simply soft-skips.
+        id: auth_mode
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -n "${OPENAI_API_KEY:-}" ]; then
+            echo "mode=apikey" >> "$GITHUB_OUTPUT"
+            echo "Auth mode: API key (OPENAI_API_KEY set) — droplet auth.json not used."
+          else
+            echo "mode=chatgpt" >> "$GITHUB_OUTPUT"
+            echo "Auth mode: ChatGPT account (auth.json via droplet/secret)."
+          fi
+
       - name: Set up SSH key for droplet
+        if: steps.auth_mode.outputs.mode == 'chatgpt'
         env:
           DROPLET_HOST: ${{ secrets.DROPLET_HOST }}
           DROPLET_SSH_KEY: ${{ secrets.DROPLET_SSH_KEY }}
@@ -110,6 +136,7 @@ jobs:
           ssh-keyscan -H "$DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Restore auth.json (droplet → fallback to secret seed)
+        if: steps.auth_mode.outputs.mode == 'chatgpt'
         env:
           DROPLET_HOST: ${{ secrets.DROPLET_HOST }}
           # The secret is only read if the droplet copy is missing.
@@ -194,6 +221,11 @@ jobs:
       - name: Run Codex
         id: run_codex
         env:
+          # When set, codex authenticates with this API key instead of
+          # the ChatGPT auth.json. Arrives as "" when the secret is
+          # unset; the run step drops an empty value so it can never
+          # shadow the auth.json path.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           PROMPT: |
             You are reviewing PR #${{ github.event.pull_request.number }}
             for ${{ github.repository }}.
@@ -289,13 +321,30 @@ jobs:
           # tell an expired-auth failure (a credential outage that must
           # NOT red-block every PR) apart from a genuine review failure.
           CODEX_LOG="$RUNNER_TEMP/codex-run.log"
+
+          # An empty OPENAI_API_KEY (secret unset) must not shadow the
+          # auth.json path — drop it so codex falls through to the
+          # ChatGPT bundle.
+          if [ -z "${OPENAI_API_KEY:-}" ]; then unset OPENAI_API_KEY || true; fi
+
           set +e
-          codex exec \
-            --skip-git-repo-check \
-            --sandbox workspace-write \
-            --model gpt-5.5 \
-            --output-last-message "$OUT_FILE" \
-            "$PROMPT" 2>&1 | tee "$CODEX_LOG"
+          if [ -n "${OPENAI_API_KEY:-}" ]; then
+            # API-key auth: no `--model gpt-5.5` pin — that model is
+            # ChatGPT-account-only. Let codex auto-select a model the
+            # API key can use (e.g. gpt-5.1-codex-max).
+            codex exec \
+              --skip-git-repo-check \
+              --sandbox workspace-write \
+              --output-last-message "$OUT_FILE" \
+              "$PROMPT" 2>&1 | tee "$CODEX_LOG"
+          else
+            codex exec \
+              --skip-git-repo-check \
+              --sandbox workspace-write \
+              --model gpt-5.5 \
+              --output-last-message "$OUT_FILE" \
+              "$PROMPT" 2>&1 | tee "$CODEX_LOG"
+          fi
           RC=${PIPESTATUS[0]}
           set -e
 
@@ -314,6 +363,10 @@ jobs:
               # the job still succeeds (no review posted, no red check).
               exit 0
             fi
+            if [ -n "${OPENAI_API_KEY:-}" ]; then
+              echo "::warning title=Codex (API-key) review failed::codex exec exited $RC under OPENAI_API_KEY auth; skipped WITHOUT blocking the PR. Check the key / model availability in the log above."
+              exit 0
+            fi
             echo "::error::codex exec failed (exit $RC) for a non-auth reason; see the log above."
             exit 1
           fi
@@ -330,10 +383,11 @@ jobs:
           echo "output-file=$OUT_FILE" >> "$GITHUB_OUTPUT"
 
       - name: Persist refreshed auth.json back to droplet
-        # `if: always()` so we still upload a refresh even when codex
-        # exec errors mid-run — the refresh might be the very thing
-        # that would unbreak the next run.
-        if: always()
+        # `always()` so we still upload a refresh even when codex exec
+        # errors mid-run. Gated to ChatGPT mode — under API-key auth
+        # there's no auth.json (and possibly no droplet secrets) to
+        # persist.
+        if: ${{ always() && steps.auth_mode.outputs.mode == 'chatgpt' }}
         env:
           DROPLET_HOST: ${{ secrets.DROPLET_HOST }}
         run: |
