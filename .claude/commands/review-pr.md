@@ -89,28 +89,18 @@ all of these bars:**
 If you are not certain an issue is real, **do not include it.**
 False positives erode trust.
 
-## Step 5 — Write the review payload
+## Step 5 — Write the review payload as ONE JSON file
 
-Use the `Write` tool for both files. **Do not use shell heredoc.**
-
-### 5a — Summary body (`/tmp/review.md`)
-
-```markdown
-## Review summary
-
-<one-sentence verdict: "LGTM" or "minor non-blocking notes" (both
-approve) — or "flagging N issue(s) for human review" (comment)>
-
-## Deployment
-
-<which side(s) need a redeploy/rebuild, if any. Skip if the PR
-doesn't touch either app.>
-```
-
-### 5b — Inline comments (`/tmp/review_comments.json`)
+Use the `Write` tool (never shell heredoc) to create a single
+`/tmp/review.json` holding the **entire** Reviews API body — `event`,
+`body`, and `comments` together. It must be one file: GitHub needs
+`event` *in the request body*, and the submit step sends this file as
+the whole body (Step 6 explains why splitting it silently breaks).
 
 ```json
 {
+  "event": "APPROVE",
+  "body": "## Review summary\n\n<verdict>\n\n## Deployment\n\n<which side needs a rebuild/redeploy, if any — omit this line when neither app is touched>",
   "comments": [
     {
       "path": "relative/file/path.py",
@@ -121,49 +111,44 @@ doesn't touch either app.>
 }
 ```
 
-- `path` — relative to repo root, must match the diff path exactly.
-- `line` — line number in the **new version** of the file. Must be
-  a line visible in the diff (added or context line within a hunk).
-  For ranges, use the last line.
-- `body` — prefix with the category. Keep it specific and actionable.
-
-If there are no findings, write `{"comments": []}`.
+- `event` — `APPROVE` or `COMMENT` (never `REQUEST_CHANGES`); pick per
+  Step 6.
+- `body` — the summary as a JSON string (escape newlines as `\n`).
+  Verdict: `"LGTM"` / `"minor non-blocking notes"` (both approve) or
+  `"flagging N issue(s) for human review"` (comment).
+- `comments` — inline findings, or `[]` if none. Each: `path`
+  (repo-relative, matches the diff exactly), `line` (line number in the
+  NEW file, visible in a diff hunk; last line for a range), `body`
+  (prefix with the category).
 
 ## Step 6 — Submit exactly one review
 
 **Advisory only — never `REQUEST_CHANGES`.**
 
 **Default to APPROVE.** `main` requires approving reviews, so a clean
-review that only leaves a COMMENT forces a needless human
-self-approval. Decide the event from your *findings*, not your tone:
+review that only COMMENTs forces a needless human self-approval. Set
+`"event"` from your *findings*, not your tone:
 
-- **APPROVE** — `/tmp/review_comments.json` has zero inline findings
-  **and** the body raises no blocking concern. "LGTM" and "minor
-  non-blocking notes" both approve.
+- **APPROVE** — `comments` is `[]` **and** the body raises no blocking
+  concern. "LGTM" and "minor non-blocking notes" both approve.
 - **COMMENT** — there is at least one inline finding, **or** you are
   putting a substantive concern a human must weigh in the body.
 
-Submit with a **single `gh api` command** that starts with `gh api`
-and passes the summary by file reference. This is load-bearing: the
-sandbox only permits `Bash(gh api:*)` and rejects any command it can't
-statically analyze — so do **NOT** prefix the command with a variable
-assignment (`REVIEW_BODY=...`), and do **NOT** use command
-substitution (`$(cat ...)`) or a `jq`/`cat` pipeline. Those forms are
-silently blocked and the review never posts.
+Submit with a **single `gh api` command**. Two hard rules, each of which
+has silently eaten a review before:
 
-Decide the event yourself per the rule above and write it as a literal
-(`APPROVE` when `/tmp/review_comments.json` is `{"comments": []}` and
-nothing blocking is in the body; otherwise `COMMENT`):
+1. It MUST start with `gh api` — the sandbox only allows
+   `Bash(gh api:*)` and rejects anything it can't statically analyze:
+   no leading `VAR=...` assignment, no `$(...)`, no `jq`/`cat` pipeline.
+2. It MUST send the whole payload via `--input` with **no `-f`/`-F`
+   field flags**. With `--input`, any `-f`/`-F` flags are pushed to the
+   query string instead of the body, so `event` is dropped and GitHub
+   creates an unsubmitted **pending** review that never appears.
 
 ```bash
-gh api "repos/{owner}/{repo}/pulls/<N>/reviews" --method POST -f event=APPROVE -F body=@/tmp/review.md --input /tmp/review_comments.json --jq '.html_url'
+gh api "repos/{owner}/{repo}/pulls/<N>/reviews" --method POST --input /tmp/review.json --jq '.html_url'
 ```
 
-- `-F body=@/tmp/review.md` reads the summary from the file (no shell
-  quoting, nothing to statically analyze).
-- `--input /tmp/review_comments.json` attaches the inline comments.
-- Swap `event=APPROVE` → `event=COMMENT` when there are findings.
-
-**One attempt, one outcome — never retry**, with one exception: if
-`APPROVE` fails with "cannot approve your own pull request", retry once
-with `event=COMMENT`.
+**One attempt, one outcome — never retry**, with one exception: if it
+fails with "cannot approve your own pull request", change `"event"` to
+`"COMMENT"` in `/tmp/review.json` and run the command once more.
