@@ -226,6 +226,10 @@ jobs:
           # unset; the run step drops an empty value so it can never
           # shadow the auth.json path.
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # Optional override for the API-key model pin (default
+          # gpt-5.1-codex-max) if this OpenAI project entitles a
+          # different codex model.
+          CODEX_API_MODEL: ${{ vars.CODEX_API_MODEL }}
           PROMPT: |
             You are reviewing PR #${{ github.event.pull_request.number }}
             for ${{ github.repository }}.
@@ -338,11 +342,14 @@ jobs:
             # (you get a 401 "Missing bearer" otherwise) — write the key
             # into CODEX_HOME first. `--with-api-key` reads it from stdin.
             printenv OPENAI_API_KEY | codex login --with-api-key >>"$CODEX_LOG" 2>&1
-            # No `--model gpt-5.5` pin — that model is ChatGPT-account-
-            # only; let codex pick an API-compatible default.
+            # codex's default `gpt-5.5` is ChatGPT-account-only ("project
+            # does not have access"). Pin a codex model the API project
+            # can use. Override via the CODEX_API_MODEL repo variable if
+            # this project has a different model entitlement.
             codex exec \
               --skip-git-repo-check \
               --sandbox workspace-write \
+              --model "${CODEX_API_MODEL:-gpt-5.1-codex-max}" \
               --output-last-message "$OUT_FILE" \
               "$PROMPT" 2>&1 | tee -a "$CODEX_LOG"
           else
