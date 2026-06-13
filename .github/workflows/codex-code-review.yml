@@ -277,6 +277,10 @@ jobs:
         run: |
           set -euo pipefail
 
+          # The droplet Restore step creates CODEX_HOME, but it's skipped
+          # in API-key mode — ensure the dir exists either way.
+          mkdir -p "$CODEX_HOME"
+
           OUT_FILE="$RUNNER_TEMP/codex-output.txt"
 
           # CODEX_HOME comes from the workflow-level env block.
