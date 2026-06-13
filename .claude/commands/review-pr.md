@@ -143,27 +143,27 @@ self-approval. Decide the event from your *findings*, not your tone:
 - **COMMENT** — there is at least one inline finding, **or** you are
   putting a substantive concern a human must weigh in the body.
 
-Derive the event from the findings file so the choice isn't left to
-tone, then submit one atomic review:
+Submit with a **single `gh api` command** that starts with `gh api`
+and passes the summary by file reference. This is load-bearing: the
+sandbox only permits `Bash(gh api:*)` and rejects any command it can't
+statically analyze — so do **NOT** prefix the command with a variable
+assignment (`REVIEW_BODY=...`), and do **NOT** use command
+substitution (`$(cat ...)`) or a `jq`/`cat` pipeline. Those forms are
+silently blocked and the review never posts.
+
+Decide the event yourself per the rule above and write it as a literal
+(`APPROVE` when `/tmp/review_comments.json` is `{"comments": []}` and
+nothing blocking is in the body; otherwise `COMMENT`):
 
 ```bash
-REVIEW_BODY=$(cat /tmp/review.md)
-if [ "$(jq '.comments | length' /tmp/review_comments.json)" -eq 0 ]; then
-  EVENT=APPROVE   # nothing flagged inline → approve. Override to
-                  # COMMENT only if REVIEW_BODY raises a blocking concern.
-else
-  EVENT=COMMENT
-fi
-gh api \
-  "repos/{owner}/{repo}/pulls/<N>/reviews" \
-  --method POST \
-  -f event="$EVENT" \
-  -f body="$REVIEW_BODY" \
-  --input /tmp/review_comments.json \
-  --jq '.html_url'
+gh api "repos/{owner}/{repo}/pulls/<N>/reviews" --method POST -f event=APPROVE -F body=@/tmp/review.md --input /tmp/review_comments.json --jq '.html_url'
 ```
 
-**Never retry on failure.** One attempt, one outcome.
+- `-F body=@/tmp/review.md` reads the summary from the file (no shell
+  quoting, nothing to statically analyze).
+- `--input /tmp/review_comments.json` attaches the inline comments.
+- Swap `event=APPROVE` → `event=COMMENT` when there are findings.
 
-**Only fallback:** if `APPROVE` fails with "cannot approve your own
-pull request", retry once with `event=COMMENT` using the same body.
+**One attempt, one outcome — never retry**, with one exception: if
+`APPROVE` fails with "cannot approve your own pull request", retry once
+with `event=COMMENT`.
