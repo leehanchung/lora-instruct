@@ -122,29 +122,44 @@ jobs:
           mkdir -p "$CODEX_HOME"
           chmod 700 "$CODEX_HOME"
 
-          # Try the durable droplet copy first. `scp -q` suppresses
-          # progress chatter; the `&& echo`/`|| echo` lines are the
-          # only signal we surface to logs (no token bytes ever).
+          # Pull BOTH candidate copies and use whichever has the newer
+          # last_refresh. ISO-8601 timestamps sort lexically, so a freshly
+          # re-seeded CODEX_AUTH_JSON secret wins over a stale droplet copy
+          # (the "I updated the secret but it kept using the dead droplet
+          # token" trap), and a codex-rotated droplet copy wins over an old
+          # secret seed. Self-healing both directions — recover by just
+          # updating the secret, no droplet SSH needed. No token bytes ever
+          # hit the logs.
+          DROPLET_TMP="$RUNNER_TEMP/auth.droplet.json"
+          SECRET_TMP="$RUNNER_TEMP/auth.secret.json"
+          pick=""; pick_when=""; pick_label=""
+
           if scp -q \
               -i ~/.ssh/codex_droplet \
               -o StrictHostKeyChecking=yes \
               "root@${DROPLET_HOST}:${DROPLET_AUTH_PATH}" \
-              "$AUTH_JSON_PATH" 2>/dev/null; then
-            echo "auth.json: restored from droplet"
-          else
-            # Bootstrap path: droplet doesn't have a copy yet (first
-            # ever run) or scp failed. Seed from the GitHub secret.
-            # `printf '%s'` is safer than `echo` — no trailing
-            # newline ambiguity, no backslash interpretation.
-            if [ -z "${CODEX_AUTH_JSON:-}" ]; then
-              echo "::error::Droplet copy unreachable AND CODEX_AUTH_JSON secret is empty. Run 'codex login' locally and store the resulting ~/.codex/auth.json as the CODEX_AUTH_JSON repo secret."
-              exit 1
-            fi
-            printf '%s' "$CODEX_AUTH_JSON" > "$AUTH_JSON_PATH"
-            echo "auth.json: seeded from CODEX_AUTH_JSON secret (droplet copy missing)"
+              "$DROPLET_TMP" 2>/dev/null; then
+            pick="$DROPLET_TMP"
+            pick_when="$(jq -r '.last_refresh // "0"' "$DROPLET_TMP" 2>/dev/null || echo 0)"
+            pick_label="droplet"
           fi
 
+          if [ -n "${CODEX_AUTH_JSON:-}" ]; then
+            printf '%s' "$CODEX_AUTH_JSON" > "$SECRET_TMP"
+            secret_when="$(jq -r '.last_refresh // "0"' "$SECRET_TMP" 2>/dev/null || echo 0)"
+            if [ -z "$pick" ] || [[ "$secret_when" > "$pick_when" ]]; then
+              pick="$SECRET_TMP"; pick_when="$secret_when"; pick_label="CODEX_AUTH_JSON secret"
+            fi
+          fi
+
+          if [ -z "$pick" ]; then
+            echo "::error::No auth.json available — droplet copy unreachable AND CODEX_AUTH_JSON secret is empty. Run .github/scripts/codex-auth-seed.sh after 'codex login'."
+            exit 1
+          fi
+
+          cp "$pick" "$AUTH_JSON_PATH"
           chmod 600 "$AUTH_JSON_PATH"
+          echo "auth.json: using $pick_label (last_refresh=$pick_when)"
 
       # We deliberately do NOT install bubblewrap here. An earlier
       # commit added `apt-get install -y bubblewrap` hoping to give
