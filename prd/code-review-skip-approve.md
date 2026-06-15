@@ -1,5 +1,7 @@
 # Code-review bot: approve on skip instead of commenting
 
+**Status:** not-started
+
 Plan to fix a UX gap where the auto code-reviewer leaves a "skipped"
 comment on doc-only PRs without leaving an approving review, so
 GitHub still shows "Review required" and the human has to

@@ -45,7 +45,7 @@ Decide whether this PR should be reviewed at all. **Skip review** if
 any of these are true:
 
 - The PR is a draft or closed
-- The only changes are under `prd/` (planning docs, not production code)
+- The only changes are under any `prd/` directory — root or per-app (planning docs, not production code)
 - The only changes are documentation wording fixes
 
 If skipping, write a one-line "skipped — reason" note to

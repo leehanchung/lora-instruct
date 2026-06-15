@@ -1,5 +1,7 @@
 # Code-review bot: read context files from PR head, not main
 
+**Status:** not-started
+
 Plan to fix a happy-path failure where the auto code-reviewer flags
 hallucinated "Priority 1 — Correctness" findings on PRs that
 *modify* `CLAUDE.md` (or any other context file), because the bot

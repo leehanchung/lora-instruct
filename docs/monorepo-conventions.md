@@ -34,7 +34,7 @@ SMILE-factory/
 │       └── README.md
 ├── pyproject.toml              (root — kept for legacy tooling, NOT a workspace root)
 ├── docs/                       cross-project docs (this file lives here)
-├── prd/                        plan docs for work-in-flight
+├── prd/                        repo-wide plan docs (per-app plans live under apps/<name>/prd/)
 ├── .pre-commit-config.yaml
 ├── .github/workflows/delulu-deploy.yaml
 └── Makefile                    thin dispatcher, `make -C apps/X ...`
@@ -256,5 +256,5 @@ resolution rules.
 
 - [`README.md`](../README.md) — the public-facing project landing page
 - [`CLAUDE.md`](../CLAUDE.md) — repo-level instructions for AI assistants
-- [`prd/`](../prd/) — plan docs for work in flight
+- [`prd/`](../prd/) — repo-wide plan docs (per-app plans live under [`apps/delulu_discord/prd/`](../apps/delulu_discord/prd/) and [`apps/delulu_sandbox_modal/prd/`](../apps/delulu_sandbox_modal/prd/))
 - [`docs/architecture.md`](architecture.md), [`docs/development.md`](development.md) — archived LoRA-era docs

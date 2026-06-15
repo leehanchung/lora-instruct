@@ -5,7 +5,8 @@ Companion to ``repo_config.py``. Where ``RepoConfig`` stores
 "this Discord server is allowed to bind these repos at all" — the
 access-control layer that prevents random users from pointing the
 bot at huge or unrelated repositories. See the "Access control and
-threat model" section of ``prd/repo-provisioning.md`` for the full
+threat model" section of
+``apps/delulu_discord/prd/repo-provisioning.md`` for the full
 threat model.
 
 Keyed by Discord ``guild_id``. Each entry tracks visibility

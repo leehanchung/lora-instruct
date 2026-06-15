@@ -1,5 +1,7 @@
 # `Claude PR review` flakes when claude-code-action's native installer reports success but doesn't actually install
 
+**Status:** not-started
+
 Plan to address an intermittent `Claude PR review` CI failure where
 `anthropics/claude-code-action@v1` prints `Claude Code successfully
 installed!` but the SDK then dies on launch with `Claude Code native
