@@ -1,5 +1,7 @@
 # Commit-back marker leaks + smoke-test eats error events
 
+**Status:** bug-open
+
 Two unrelated bugs in `delulu_sandbox_modal` that surfaced in a
 Codex review of an in-flight PR. Captured here so they don't get
 lost on the way to a real fix; neither is shipping behavior today

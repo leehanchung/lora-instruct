@@ -79,12 +79,14 @@ jobs:
   #
   # Decide which CI and deploy jobs to run based on the files touched.
   # Two flavors of filter per app:
-  #   - ``bot`` / ``sandbox``: matches *any* change under the app,
-  #     including tests. Gates the CI jobs — test-only changes must
-  #     still run the test suite.
-  #   - ``bot_runtime`` / ``sandbox_runtime``: excludes ``tests/**``.
-  #     Gates the deploy jobs — we don't redeploy Modal or rebuild
-  #     the bot container for a test-only change.
+  #   - ``bot`` / ``sandbox``: matches any change under the app
+  #     except plan docs (``prd/**``). Gates the CI jobs — test-only
+  #     changes must still run the test suite, but PRD-only edits
+  #     don't need to.
+  #   - ``bot_runtime`` / ``sandbox_runtime``: also excludes
+  #     ``tests/**``. Gates the deploy jobs — we don't redeploy
+  #     Modal or rebuild the bot container for a test-only or
+  #     PRD-only change.
   # On ``workflow_dispatch`` every gated job bypasses the filter so
   # the "Re-run" button always redeploys end-to-end.
   changes:
@@ -102,17 +104,21 @@ jobs:
           filters: |
             bot:
               - 'apps/delulu_discord/**'
+              - '!apps/delulu_discord/prd/**'
               - '.github/workflows/delulu-deploy.yaml'
             bot_runtime:
               - 'apps/delulu_discord/**'
               - '!apps/delulu_discord/tests/**'
+              - '!apps/delulu_discord/prd/**'
               - '.github/workflows/delulu-deploy.yaml'
             sandbox:
               - 'apps/delulu_sandbox_modal/**'
+              - '!apps/delulu_sandbox_modal/prd/**'
               - '.github/workflows/delulu-deploy.yaml'
             sandbox_runtime:
               - 'apps/delulu_sandbox_modal/**'
               - '!apps/delulu_sandbox_modal/tests/**'
+              - '!apps/delulu_sandbox_modal/prd/**'
               - '.github/workflows/delulu-deploy.yaml'
 
   # ── CI ──────────────────────────────────────────────────────

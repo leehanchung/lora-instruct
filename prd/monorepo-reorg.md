@@ -1,5 +1,7 @@
 # Monorepo reorganization
 
+**Status:** in-progress
+
 Plan to reshape the repo root from its two-era layout (LoRA-Instruct
 files scattered at root + tidy `apps/` tree for delulu) into a
 category-first monorepo structure that scales to many projects.
@@ -272,7 +274,7 @@ driven by path filters.
   - Update the droplet deploy path in README / workflow
     (`/root/SMILE-factory/apps/delulu_discord` →
     `/root/SMILE-factory/apps/delulu/discord`).
-  - Update `prd/repo-provisioning.md` path references.
+  - Update remaining root `prd/` path references.
   - Per-app PRDs under `apps/<app>/prd/` (e.g.
     `apps/delulu_discord/prd/`, `apps/delulu_sandbox_modal/prd/`)
     move with their app during the regrouping —
@@ -327,10 +329,10 @@ immediately — they don't depend on any open question.
   Mitigation: do it as a package-root move (one `pyproject.toml`
   change, one `__init__.py` if missing), not a sweeping import
   rewrite.
-- **Stranded references in PRDs and docs.** `prd/repo-provisioning.md`,
-  `ARCHITECTURE.md`, and `README.md` all reference `apps/delulu_discord`
-  paths. Each affected wave's PR must grep for and update these
-  references in the same commit.
+- **Stranded references in PRDs and docs.** Root `prd/` docs,
+  per-app PRDs, `ARCHITECTURE.md`, and `README.md` may reference
+  `apps/delulu_discord` paths. Each affected wave's PR must grep for
+  and update these references in the same commit.
 - **`.pre-commit-config.yaml` path patterns.** Must update in lockstep
   with any move that changes which directories `ruff` runs against.
   Mitigation: run `pre-commit run --all-files` on each reorg PR.

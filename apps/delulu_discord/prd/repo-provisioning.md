@@ -1,5 +1,7 @@
 # Efficient GitHub repo provisioning for delulu
 
+**Status:** v1-shipped · v2-parked
+
 ## Context
 
 The delulu bot is an @mention-gated interface to Claude Code

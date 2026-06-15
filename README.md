@@ -563,6 +563,7 @@ SMILE-factory/
 │   │   ├── .env.example                    # bot environment template
 │   │   ├── Dockerfile                      # bot image only — no sandbox deps
 │   │   ├── Makefile                        # VPS targets: sync / check / image / deploy / logs
+│   │   ├── prd/                            # bot-scoped plan docs
 │   │   └── src/delulu_discord/
 │   │       ├── main.py                     # Bot entrypoint + @mention gating
 │   │       ├── handlers.py                 # Message routing + attachment download + result posting
@@ -575,6 +576,7 @@ SMILE-factory/
 │       ├── uv.lock
 │       ├── .python-version
 │       ├── Makefile                        # Modal targets: sync / check / modal-deploy
+│       ├── prd/                            # sandbox-scoped plan docs
 │       └── src/delulu_sandbox_modal/
 │           └── app.py                      # Modal App, image, volume, secret, run_claude_code
 │
@@ -582,7 +584,7 @@ SMILE-factory/
 ├── Makefile                                # top-level dispatcher (check / deploy-bot / deploy-modal / deploy-all)
 ├── ARCHITECTURE.md                         # Full design doc
 ├── README.md                               # this file
-├── prd/                                    # planning docs
+├── prd/                                    # repo-wide planning docs (per-app plans live under apps/<name>/prd/)
 └── infra/managed-agents/                   # sibling infra work (unrelated to delulu)
 ```
 

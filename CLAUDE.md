@@ -19,5 +19,5 @@ Each project owns its own Makefile and tooling — there is no repo-wide `poetry
 
 - Never commit to `main` — always branch, push, open a PR.
 - Branch: `<type>/<slug>` (e.g. `feat/streaming-renderer`, `fix/dispatcher-timeout`).
-- Commits + PR titles: [Conventional Commits](https://www.conventionalcommits.org/) (`feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `ci`, `build`, `perf`, `style`, plus a local `prd` type for changes under `prd/`). Squash-merge uses the PR title, so it must be conventional.
+- Commits + PR titles: [Conventional Commits](https://www.conventionalcommits.org/) (`feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `ci`, `build`, `perf`, `style`, plus a local `prd` type for changes under any `prd/` directory — root or per-app). Squash-merge uses the PR title, so it must be conventional.
 - Only commit, push, or open PRs when explicitly asked. Never merge PRs — that's a human call.
