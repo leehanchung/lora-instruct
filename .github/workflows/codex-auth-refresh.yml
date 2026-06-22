@@ -1,0 +1,223 @@
+name: Codex Auth Refresh
+
+# Keeps the Codex ChatGPT-account auth.json alive so the "Codex PR
+# review" never lapses on an expired/rotated token. This is the
+# OpenAI-recommended way to maintain *account* auth in CI/CD: the
+# supported strategy is NOT "call the refresh API yourself", it is
+# "run Codex and persist the updated auth.json".
+# See https://developers.openai.com/codex/auth/ci-cd-auth.
+#
+# How it works:
+#   1. Restore auth.json — pull both the durable droplet copy and the
+#      CODEX_AUTH_JSON secret seed and use whichever has the newer
+#      last_refresh (same self-healing pick as codex-code-review.yml).
+#   2. Run a trivial `codex exec`. Codex refreshes the access token off
+#      the refresh token when it's stale / on a 401, and writes the
+#      rotated tokens + a new last_refresh back to auth.json.
+#   3. ONLY on a successful refresh, persist the rotated auth.json back
+#      to the droplet (and, if a secrets-write PAT is configured, back
+#      to the CODEX_AUTH_JSON seed too). A failed/dead-token run does
+#      NOT persist, so it can't clobber a copy a human just repaired.
+#
+# Why a daily schedule:
+#   ChatGPT-account refresh tokens are SINGLE-USE and rotate on every
+#   refresh, and a session goes stale after ~8 days without one. Daily
+#   keeps the chain warm with margin for GitHub dropping/delaying
+#   scheduled runs — it would take ~8 consecutive misses to lapse.
+#
+# CRITICAL — one account, one writer:
+#   The ChatGPT account behind CODEX_AUTH_JSON must be DEDICATED to CI.
+#   If you (or a sibling Codex client — local CLI, the VS Code
+#   extension, ChatGPT mobile) sign in with the same account, that
+#   rotates the refresh token server-side and invalidates this copy
+#   (the `refresh_token_reused` failure). This job shares the
+#   `codex-auth` concurrency group with the review workflow so there is
+#   only ever one auth.json writer across the repo.
+#
+# Bootstrap / recovery (one-time, manual): the automatic refresh cannot
+# revive an already-dead token. Run `.github/scripts/codex-auth-seed.sh`
+# after a local `codex login` to (re)seed both stores. After that this
+# job maintains it.
+
+on:
+  schedule:
+    # 06:17 UTC daily. Off-the-hour on purpose — top-of-hour cron slots
+    # are the most likely to be delayed by GitHub scheduler congestion.
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+# Same group as codex-code-review.yml: auth.json has a single writer
+# across the whole repo, so a refresh and a review can never rotate the
+# token at the same time.
+concurrency:
+  group: codex-auth
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: Refresh Codex auth.json
+    runs-on: ubuntu-latest
+    # Nothing here uses the default GITHUB_TOKEN — auth.json moves over
+    # SSH and the optional seed update uses GH_SECRETS_PAT. Keep the
+    # ambient token read-only.
+    permissions:
+      contents: read
+    env:
+      CODEX_HOME: ${{ github.workspace }}/.codex-home
+      AUTH_JSON_PATH: ${{ github.workspace }}/.codex-home/auth.json
+      DROPLET_AUTH_PATH: /root/.codex-ci/auth.json
+    steps:
+      - name: Set up SSH key for droplet
+        env:
+          DROPLET_HOST: ${{ secrets.DROPLET_HOST }}
+          DROPLET_SSH_KEY: ${{ secrets.DROPLET_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          # No `set -x` anywhere — leaks would echo the SSH key or token.
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$DROPLET_SSH_KEY" > ~/.ssh/codex_droplet
+          chmod 600 ~/.ssh/codex_droplet
+          ssh-keyscan -H "$DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Restore auth.json (fresher of droplet / secret seed)
+        env:
+          DROPLET_HOST: ${{ secrets.DROPLET_HOST }}
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$CODEX_HOME"
+          chmod 700 "$CODEX_HOME"
+
+          # Pull BOTH candidate copies and use whichever has the newer
+          # last_refresh (ISO-8601 sorts lexically). A freshly re-seeded
+          # secret beats a stale droplet copy and vice-versa — self-
+          # healing both directions. No token bytes hit the logs.
+          DROPLET_TMP="$RUNNER_TEMP/auth.droplet.json"
+          SECRET_TMP="$RUNNER_TEMP/auth.secret.json"
+          pick=""; pick_when=""; pick_label=""
+
+          if scp -q \
+              -i ~/.ssh/codex_droplet \
+              -o StrictHostKeyChecking=yes \
+              "root@${DROPLET_HOST}:${DROPLET_AUTH_PATH}" \
+              "$DROPLET_TMP" 2>/dev/null; then
+            pick="$DROPLET_TMP"
+            pick_when="$(jq -r '.last_refresh // "0"' "$DROPLET_TMP" 2>/dev/null || echo 0)"
+            pick_label="droplet"
+          fi
+
+          if [ -n "${CODEX_AUTH_JSON:-}" ]; then
+            printf '%s' "$CODEX_AUTH_JSON" > "$SECRET_TMP"
+            secret_when="$(jq -r '.last_refresh // "0"' "$SECRET_TMP" 2>/dev/null || echo 0)"
+            if [ -z "$pick" ] || [[ "$secret_when" > "$pick_when" ]]; then
+              pick="$SECRET_TMP"; pick_when="$secret_when"; pick_label="CODEX_AUTH_JSON secret"
+            fi
+          fi
+
+          if [ -z "$pick" ]; then
+            echo "::error::No auth.json available — droplet copy unreachable AND CODEX_AUTH_JSON secret empty. Run .github/scripts/codex-auth-seed.sh after 'codex login'."
+            exit 1
+          fi
+
+          cp "$pick" "$AUTH_JSON_PATH"
+          chmod 600 "$AUTH_JSON_PATH"
+          echo "auth.json: using $pick_label (last_refresh=$pick_when)"
+
+      - name: Install Codex CLI
+        # Pin to match codex-code-review.yml so refresh and review use
+        # the same client. Bump both together.
+        run: npm install -g @openai/codex@0.128.0
+
+      - name: Run Codex to trigger a token refresh
+        run: |
+          set -uo pipefail
+
+          BEFORE=$(jq -r '.last_refresh // "unknown"' "$AUTH_JSON_PATH" 2>/dev/null || echo "unknown")
+          echo "last_refresh before: $BEFORE"
+
+          # A trivial prompt is enough: Codex must present a valid access
+          # token to call the model, so it refreshes (and persists the
+          # rotated tokens to auth.json) when the current one is stale or
+          # 401s. `--sandbox read-only` because we touch nothing; auth
+          # refresh happens regardless of sandbox setup.
+          LOG="$RUNNER_TEMP/codex-refresh.log"
+          set +e
+          codex exec \
+            --skip-git-repo-check \
+            --sandbox read-only \
+            --model gpt-5.5 \
+            "Reply with exactly: ok" 2>&1 | tee "$LOG"
+          RC=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$RC" -ne 0 ]; then
+            if grep -qiE 'refresh_token_reused|token_expired|Failed to refresh token|authentication token is expired|access token could not be refreshed|401 Unauthorized' "$LOG"; then
+              echo "::error title=Codex auth dead — manual re-seed needed::The stored refresh token is expired or was already consumed (most often a sibling Codex sign-in on the same account). Automatic refresh cannot recover this. Run 'codex login' locally, then .github/scripts/codex-auth-seed.sh to re-seed the CODEX_AUTH_JSON secret + droplet copy. After that this job keeps it alive."
+              exit 1
+            fi
+            echo "::error::codex exec failed (exit $RC) for a non-auth reason; see the log above."
+            exit 1
+          fi
+
+          AFTER=$(jq -r '.last_refresh // "unknown"' "$AUTH_JSON_PATH" 2>/dev/null || echo "unknown")
+          echo "last_refresh after:  $AFTER"
+          if [ "$BEFORE" = "$AFTER" ]; then
+            echo "::notice::Token was still fresh; codex did not rotate it this run (no action needed)."
+          else
+            echo "::notice::Token refreshed and rotated; persisting the new copy."
+          fi
+
+      - name: Persist refreshed auth.json back to droplet
+        # Only on success — a dead-token run (Run Codex exited non-zero)
+        # must NOT write its unrefreshed copy back, or it could clobber a
+        # droplet copy a human just repaired via codex-auth-seed.sh.
+        if: success()
+        env:
+          DROPLET_HOST: ${{ secrets.DROPLET_HOST }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "$AUTH_JSON_PATH" ]; then
+            echo "auth.json: nothing to persist (file missing)"
+            exit 0
+          fi
+          ssh \
+            -i ~/.ssh/codex_droplet \
+            -o StrictHostKeyChecking=yes \
+            "root@${DROPLET_HOST}" \
+            "mkdir -p /root/.codex-ci && chmod 700 /root/.codex-ci"
+          scp -q \
+            -i ~/.ssh/codex_droplet \
+            -o StrictHostKeyChecking=yes \
+            "$AUTH_JSON_PATH" \
+            "root@${DROPLET_HOST}:${DROPLET_AUTH_PATH}"
+          ssh \
+            -i ~/.ssh/codex_droplet \
+            -o StrictHostKeyChecking=yes \
+            "root@${DROPLET_HOST}" \
+            "chmod 600 ${DROPLET_AUTH_PATH}"
+          echo "auth.json: persisted refreshed copy to droplet"
+
+      - name: Refresh the CODEX_AUTH_JSON seed too (best-effort)
+        # Keeps the bootstrap seed current so the droplet-unreachable
+        # fallback path also gets a recent token. Needs a PAT with
+        # secrets:write — the default GITHUB_TOKEN cannot write Actions
+        # secrets. Skipped automatically when GH_SECRETS_PAT isn't set,
+        # in which case the droplet copy alone is the live store. Only on
+        # success, same anti-clobber rationale as the droplet persist.
+        if: success()
+        env:
+          GH_SECRETS_PAT: ${{ secrets.GH_SECRETS_PAT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_SECRETS_PAT:-}" ]; then
+            echo "GH_SECRETS_PAT not set — skipping seed update (droplet copy is the live store)."
+            exit 0
+          fi
+          if [ ! -s "$AUTH_JSON_PATH" ]; then
+            echo "auth.json missing/empty — nothing to push to the seed."
+            exit 0
+          fi
+          GH_TOKEN="$GH_SECRETS_PAT" gh secret set CODEX_AUTH_JSON \
+            --repo "${{ github.repository }}" < "$AUTH_JSON_PATH"
+          echo "CODEX_AUTH_JSON secret refreshed from the rotated auth.json"
