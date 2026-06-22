@@ -840,7 +840,7 @@ def main():
         "--output-dir",
         type=Path,
         default=Path(__file__).parent / "job_postings",
-        help="Directory to save job posting files (default: scripts/job_postings/)",
+        help="Directory to save job posting files (default: ./job_postings/ next to this script)",
     )
     parser.add_argument(
         "--format",
