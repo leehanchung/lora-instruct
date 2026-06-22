@@ -6,6 +6,7 @@ stands in the code. Cross-cutting PRDs live here under `prd/`; app-specific ones
 live under `apps/<app>/prd/`.
 
 **Status vocabulary:** `not-started` (plan written, no code) · `in-progress` ·
+`complete` (intended work landed; explicitly deferred options remain parked) ·
 `v1-shipped · v2-parked` (core landed, extensions deferred) · `parked`
 (deliberately deferred, has trigger conditions) · `bug-open` (defect tracker,
 fix not yet applied) · `shipped` (fully landed — delete the PRD per the
@@ -18,7 +19,7 @@ delete-on-ship convention, e.g. the removed `streaming.md`).
 
 | PRD | Status | Scope |
 |---|---|---|
-| [monorepo-reorg.md](monorepo-reorg.md) | `in-progress` | Category-first monorepo layout, 8 waves. Waves 0 & 3 done; 1,2,4–7 open. |
+| [monorepo-reorg.md](monorepo-reorg.md) | `complete` | Waves 0–5 and 7 landed; optional Wave 6 is deferred until a third delulu app exists. |
 | [codex-ci-auth.md](codex-ci-auth.md) | `v1-shipped · v2-parked` | Codex CLI auth in CI via ChatGPT `auth.json` (not `OPENAI_API_KEY`). Core landed; API-key fallback + multi-identity parked. |
 | [claude-action-install-flake.md](claude-action-install-flake.md) | `not-started` | Work around `claude-code-action` native installer reporting success while the binary is absent. |
 | [code-review-skip-approve.md](code-review-skip-approve.md) | `not-started` | Make the code-review bot **approve** on the doc-only skip path instead of leaving a non-approving comment. |
@@ -45,7 +46,7 @@ delete-on-ship convention, e.g. the removed `streaming.md`).
 Ranked by size × impact:
 
 1. **Repo provisioning** (`repo-provisioning.md`) — XL, v1 shipped, hardening pending. The anchor feature spanning both delulu apps.
-2. **Monorepo reorg** (`monorepo-reorg.md`) — XL, in-progress (L remaining).
+2. **Monorepo reorg** (`monorepo-reorg.md`) — XL, complete; optional app-grouping wave parked.
 3. **Private GitHub repo support** (`private-repos.md`) — L, v1 shipped, v2 parked.
 4. **Cancel in-flight runs** (`cancel-run.md`) — M, not started.
 5. **Codex auth via ChatGPT account** (`codex-ci-auth.md`) — M, core shipped, v2 parked.
