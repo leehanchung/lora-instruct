@@ -1,0 +1,33 @@
+# Base config for the slime deep-research RL recipe.
+#
+# slime itself is consumed as a Docker image; these values are rendered into the
+# launch/run.sh arg blocks (Megatron + SGLang + slime). Keep hyperparameters
+# HERE (versioned, diffable) — never inline them into run.sh.
+
+engine:
+  # Pin a specific digest in real runs for reproducibility, e.g.
+  #   slimerl/slime@sha256:...
+  image: "slimerl/slime:latest"
+  # Where this recipe's plugins/ is mounted inside the container.
+  plugins_mountpoint: "/workspace/plugins"
+
+model:
+  hf_checkpoint: "/root/GLM-Z1-9B-0414"   # converted to Megatron dist before launch
+  # Megatron parallelism (MODEL_ARGS in run.sh).
+  tensor_model_parallel_size: 2
+  pipeline_model_parallel_size: 1
+
+rollout:
+  # slime plugin hooks — our code, wired by path (no engine fork).
+  custom_generate_function_path: "plugins.rollout.generate"
+  custom_rm_path: "plugins.reward.reward_func"
+  # Deep-research agent controls (read by plugins/rollout.py via args).
+  tool_server_url: "http://127.0.0.1:8000"   # services/search_server
+  max_tool_calls: 20
+  n_samples_per_prompt: 8                     # GRPO group size
+
+train:
+  algorithm: "grpo"
+  lr: 1.0e-6
+  global_batch_size: 256
+  total_epochs: 1
