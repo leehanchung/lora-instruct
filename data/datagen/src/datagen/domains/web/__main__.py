@@ -43,7 +43,11 @@ def main() -> None:
     p.add_argument("--seeds", required=True, type=Path)
     p.add_argument("--out", required=True, type=Path)
     args = p.parse_args()
-    seeds = [s for s in args.seeds.read_text().splitlines() if s.strip()]
+    seeds = [
+        s
+        for s in args.seeds.read_text().splitlines()
+        if s.strip() and not s.lstrip().startswith("#")
+    ]
     asyncio.run(run_pipeline(seeds, args.out))
 
 
