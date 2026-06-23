@@ -1,4 +1,3 @@
-.gitignore
 checkpoint**
 minimal-llama**
 upload.py
