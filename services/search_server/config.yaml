@@ -1,0 +1,14 @@
+# search-server config. Backend selection + endpoints; secrets via env vars.
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+backend:
+  # one of: bm25 | dense | web
+  kind: "bm25"
+  index_dir: "./index"
+
+# Live-web backend (used when kind: web). Keys come from env, never committed.
+web:
+  provider: "serper"        # serper | jina | bing
+  # SERPER_API_KEY / JINA_API_KEY read from environment
