@@ -26,6 +26,12 @@ def test_f1_accepts_list_ground_truth():
     assert score(row).score == 1.0
 
 
+def test_f1_empty_ground_truth_list_does_not_crash():
+    # max() over an empty golds list must not raise; score is 0.0.
+    row = Row(data_source="f1", prediction="anything", ground_truth=[])
+    assert score(row).score == 0.0
+
+
 def test_unknown_data_source_raises():
     with pytest.raises(KeyError):
         score(Row(data_source="nope", prediction="x", ground_truth="y"))

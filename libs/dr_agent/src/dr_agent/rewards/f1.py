@@ -24,5 +24,5 @@ def _f1(pred: str, gold: str) -> float:
 
 def score(row: Row) -> RewardResult:
     golds = row.ground_truth if isinstance(row.ground_truth, list) else [row.ground_truth]
-    best = max(_f1(row.prediction, g) for g in golds)
+    best = max((_f1(row.prediction, g) for g in golds), default=0.0)
     return RewardResult(score=best, components={"f1": best})
