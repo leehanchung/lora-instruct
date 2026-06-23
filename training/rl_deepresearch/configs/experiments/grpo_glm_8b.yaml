@@ -1,0 +1,11 @@
+# Experiment override: GRPO on GLM-8B. Inherits configs/base.yaml.
+# One file = one reproducible run. Diff this, not a shell script.
+
+_base: ../base.yaml
+
+train:
+  lr: 5.0e-7
+  global_batch_size: 128
+
+rollout:
+  n_samples_per_prompt: 16
