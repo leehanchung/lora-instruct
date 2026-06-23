@@ -1,0 +1,4 @@
+# One seed topic per line. Lines starting with # are ignored.
+history of the transistor
+notable bridge collapses
+deep-sea hydrothermal vent discoveries
