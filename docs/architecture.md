@@ -4,6 +4,12 @@
 
 LoRA-Instruct fine-tunes open-source causal LLMs using Low-Rank Adaptation (LoRA) via HuggingFace PEFT. It also includes an inference benchmarking tool for OpenAI-compatible endpoints. The project now lives at `training/lora_instruct/`.
 
+> **Deep-research training + evaluation infrastructure** (the slime RL recipe,
+> the shared `libs/dr_agent` library, `services/search_server`, `data/datagen`,
+> and the `eval/` harness) has its own architecture doc:
+> [plan-deep-agent-rl.md](plan-deep-agent-rl.md). The sections below describe the
+> LoRA-Instruct SFT recipe specifically.
+
 ## Directory Structure
 
 ```

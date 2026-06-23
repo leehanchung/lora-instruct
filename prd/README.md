@@ -20,6 +20,7 @@ delete-on-ship convention, e.g. the removed `streaming.md`).
 | PRD | Status | Scope |
 |---|---|---|
 | [monorepo-reorg.md](monorepo-reorg.md) | `complete` | Waves 0–5 and 7 landed; optional Wave 6 is deferred until a third delulu app exists. |
+| [deep-research-training-eval-infra.md](deep-research-training-eval-infra.md) | `in-progress` | Training + eval infra for a deep-research agent: shared `libs/dr_agent`, `services/search_server`, `data/datagen`, `eval/`, slime RL recipe. Scaffold + reward registry landed; loops/backends are stubs. |
 | [codex-ci-auth.md](codex-ci-auth.md) | `v1-shipped · v2-parked` | Codex CLI auth in CI via ChatGPT `auth.json` (not `OPENAI_API_KEY`). Core landed; API-key fallback + multi-identity parked. |
 | [claude-action-install-flake.md](claude-action-install-flake.md) | `not-started` | Work around `claude-code-action` native installer reporting success while the binary is absent. |
 | [code-review-skip-approve.md](code-review-skip-approve.md) | `not-started` | Make the code-review bot **approve** on the doc-only skip path instead of leaving a non-approving comment. |
