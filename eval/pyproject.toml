@@ -1,0 +1,35 @@
+[project]
+name = "dr-eval"
+version = "0.1.0"
+description = "Standalone two-phase eval harness (generate rollouts -> score offline) for deep-research agents."
+requires-python = ">=3.11"
+dependencies = [
+    "dr-agent",
+    "pyyaml>=6.0",
+    "pydantic>=2.0,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.15",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.uv.sources]
+dr-agent = { path = "../libs/dr_agent", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/eval_harness"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "C", "B"]
+ignore = ["E501", "B008", "C901"]

@@ -1,0 +1,6 @@
+# SimpleQA benchmark config.
+name: "simpleqa"
+data_source: "exact_match"   # selects the dr_agent reward scorer
+description: "Short-form factual QA; scored by normalized exact match."
+# tasks.jsonl (one {id, prompt, ground_truth, data_source} per line) lives
+# alongside this file. Not committed if large — see eval/README.md.
