@@ -2,7 +2,7 @@
 
 APPS := apps/delulu_discord apps/delulu_sandbox_modal
 # Deep-research training+eval projects (uv-based; see prd/deep-research-training-eval-infra.md)
-DR_PROJECTS := libs/dr_agent services/search_server data/datagen eval training/rl_deepresearch
+DR_PROJECTS := libs/dr_agent services/search_server data/datagen eval/deep_research training/rl_deepresearch
 
 help:
 	@echo "Top-level targets:"
