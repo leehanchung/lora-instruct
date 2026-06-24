@@ -1,4 +1,0 @@
-# eval run artifacts — never commit rollout dumps / reports
-results/
-*.jsonl
-!benchmarks/**/tasks.jsonl

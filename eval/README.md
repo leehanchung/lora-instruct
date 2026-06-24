@@ -1,33 +1,43 @@
-# dr-eval
+# eval/ — benchmark evaluation
 
-Standalone **two-phase** evaluation harness for deep-research agents:
-
-1. **generate** — run the shared `dr_agent` loop over a benchmark's tasks, write
-   rollout JSONL (`harness/generate.py`);
-2. **score** — score those rollouts offline with the shared `dr_agent` reward
-   registry (`harness/score.py`).
-
-Decoupling generation from scoring means you can re-score (new metric, fixed
-grader) without paying to re-generate. It also means eval uses **the exact same
-agent loop and scorers as RL training** — no train/eval skew.
-
-> This is deliberately a standalone top-level category, not buried inside a
-> training recipe. Search-R1 / DeepResearcher collapsed eval into "val batches +
-> reward inside the trainer," which makes eval impossible to reproduce outside a
-> training run. Don't repeat that.
-
-## Layout
+One evaluation system, run by **[BenchFlow](https://github.com/benchflow-ai/benchflow)**
+(the sole runner). A **benchmark** is a flat dir of **tasks** (each task = one
+input → one trajectory → one score, à la
+[skillsbench](https://github.com/benchflow-ai/skillsbench/tree/main/tasks)). The
+**agent harness** and **model** are run-time knobs (`--agent` / `--model`), not
+structure — so the same benchmark runs under pi, Claude Code, Codex, … against
+any model.
 
 ```
-src/eval_harness/
-  harness/   generate.py · score.py · runner.py
-  samplers/  shared sampling logic (one place, not per-benchmark)
-benchmarks/  one folder per benchmark (browsecomp · gaia · hle · simpleqa)
-results/     gitignored rollout + report artifacts
+eval/
+  benchmarks/<name>/tasks/<id>/     a benchmark = a tasks/ dir; each task = task.md + verifier/
+    simpleqa/  hotpotqa/            (browsecomp / gaia / hle come later)
+  _tooling/                         run everything from here
+    Makefile  scripts/  pi/  docs/
+  _runs/<agent>/<benchmark>/        run outputs (gitignored)
 ```
 
 ## Run
 
 ```bash
-make eval BENCHMARK=simpleqa CONFIG=run.yaml
+cd eval/_tooling
+make serve                                              # start the engine (SGLang :30000)
+make gen BENCHMARK=simpleqa N=50                        # dataset -> benchmarks/simpleqa/tasks/
+make eval BENCHMARK=simpleqa AGENT=pi MODEL=vllm/qwen35-2b-base
+make eval BENCHMARK=hotpotqa AGENT=claude MODEL=claude-haiku-4-5-20251001
 ```
+
+`AGENT` and `MODEL` are the only things that change to swap harness/model;
+the benchmark (its `tasks/`) stays fixed. Outputs land in
+`_runs/<agent>/<benchmark>/`. See [`_tooling/README.md`](_tooling/README.md) for
+setup, the SGLang engine, and the known BenchFlow proxy issue
+([`_tooling/docs/benchflow-engine-500.md`](_tooling/docs/benchflow-engine-500.md)).
+
+## Other harnesses?
+
+There's one runner: **BenchFlow**. To run a different agent harness
+(`dr_agent`, Claude Code, Codex, …) on these benchmarks, register it as a
+BenchFlow **agent** and select it with `--agent` — the benchmarks (`tasks/`) and
+the runner don't change. The shared `libs/dr_agent` loop is the intended path for
+a future `--agent dr_agent`; until that wrapper exists, the dr_agent harness isn't
+wired here.
