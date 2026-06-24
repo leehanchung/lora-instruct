@@ -30,9 +30,10 @@ async def _main_async(config_path: Path, benchmark: str) -> None:
     cfg = yaml.safe_load(config_path.read_text())
     agent_config = AgentConfig(**cfg.get("agent", {}))
 
-    repo_root = Path(__file__).resolve().parents[4]
-    benchmark_dir = repo_root / "eval" / "benchmarks" / benchmark
-    out_dir = repo_root / "eval" / "results" / cfg.get("run_name", "run") / benchmark
+    # project root = eval/deep_research/ (…/src/eval_harness/harness/runner.py)
+    project_root = Path(__file__).resolve().parents[3]
+    benchmark_dir = project_root / "benchmarks" / benchmark
+    out_dir = project_root / "results" / cfg.get("run_name", "run") / benchmark
 
     tasks = _load_tasks(benchmark_dir)
     rollouts = await generate(tasks, agent_config, out_dir)

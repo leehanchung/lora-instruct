@@ -1,0 +1,24 @@
+{
+  "providers": {
+    "sglang": {
+      "baseUrl": "http://localhost:30000/v1",
+      "api": "openai-completions",
+      "apiKey": "dummy-key",
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false
+      },
+      "models": [
+        {
+          "id": "qwen35-2b-base",
+          "name": "Qwen3.5-2B-Base (local vLLM)",
+          "reasoning": false,
+          "input": ["text"],
+          "contextWindow": 16384,
+          "maxTokens": 2048,
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+        }
+      ]
+    }
+  }
+}

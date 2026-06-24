@@ -1,21 +1,31 @@
-# CLAUDE.md — dr-eval (evaluation harness)
+# CLAUDE.md — eval/
 
-Standalone two-phase eval (generate → score). Reuses `libs/dr_agent` for both the
-agent loop and the scorers, so eval can never drift from training.
+Benchmark evaluation, run by **BenchFlow** (the sole runner). Work from
+`eval/_tooling/` (its `Makefile` is the entrypoint); see [`README.md`](README.md)
+for the model.
 
-## Commands
+## Mental model (don't break it)
 
-- `make eval BENCHMARK=<name> CONFIG=<run.yaml>` — generate + score a benchmark
-- `make check` / `make test`
+- **A benchmark = a flat `tasks/` dir** under `benchmarks/<name>/tasks/`. Each
+  task dir (`task.md` + `verifier/`) is one input → one trajectory → one score.
+- **BenchFlow is the runner, not a harness.** The harness is the **agent**
+  (`pi` / `claude` / `codex` / …), selected at runtime via `--agent`; the model
+  via `--model`. These are knobs, never folders — don't create per-agent or
+  per-model directories or configs.
+- **No per-benchmark `run.yaml`.** Run config (agent, model, sandbox, engine URL)
+  is supplied by the `make eval` driver, so a benchmark folder is *just* tasks.
+
+## Commands (from `eval/_tooling/`)
+
+- `make eval BENCHMARK=<b> AGENT=<a> MODEL=<m>` — run a benchmark via BenchFlow
+- `make gen BENCHMARK=<b> N=<n>` — generate task dirs from a dataset
+- `make serve` — start the local engine (SGLang); `make smoke` — agent→engine check
 
 ## Conventions
 
-- **Keep generate and score separate.** Never fold scoring into generation —
-  offline re-scoring is the whole point.
-- **One folder per benchmark** under `benchmarks/`, identical layout
-  (`config.yaml`, `tasks.jsonl`, optional `grader.py`).
-- **Scorers live in `libs/dr_agent/rewards`**, not here. Add a `grader.py` only
-  for a genuinely benchmark-specific metric, and prefer promoting it to the
-  shared registry.
-- **Shared sampling logic goes in `samplers/`**, never copy-pasted per benchmark.
-- `results/` is gitignored; never commit rollout dumps.
+- Adding a benchmark = add `benchmarks/<name>/tasks/` (a generator in
+  `scripts/gen_tasks.py`), nothing else.
+- `benchmarks/*/tasks/` and `_runs/` are gitignored (regenerable); keep generators
+  and tooling, not bulk data, in git.
+- `deep_research/` is the **parked** legacy dr_agent two-phase harness — leave it
+  alone until it's wrapped as a `--agent dr_agent` (see [`README.md`](README.md)).
