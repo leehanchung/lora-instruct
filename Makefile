@@ -2,13 +2,13 @@
 
 APPS := apps/delulu_discord apps/delulu_sandbox_modal
 # Deep-research training+eval projects (uv-based; see prd/deep-research-training-eval-infra.md)
-DR_PROJECTS := libs/dr_agent services/search_server data/datagen eval/deep_research training/rl_deepresearch
+DR_PROJECTS := libs/dr_agent services/search_server data/datagen training/rl_deepresearch
 
 help:
 	@echo "Top-level targets:"
 	@echo "  make check         run ruff on all apps/"
 	@echo "  make lora-check    run ruff on training/lora_instruct"
-	@echo "  make dr-check      run ruff on all deep-research projects (libs/services/data/eval/training)"
+	@echo "  make dr-check      run ruff on all deep-research projects (libs/services/data/training)"
 	@echo "  make deploy-bot    deploy the Discord bot to the VPS"
 	@echo "  make deploy-modal  deploy the Modal sandbox app"
 	@echo "  make deploy-all    modal-deploy then bot-deploy"

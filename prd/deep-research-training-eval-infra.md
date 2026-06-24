@@ -24,10 +24,17 @@ chroma context-1-data-gen.
    (`dr_agent.rewards`). RL reward and eval scoring both call `score(row)`. Add a
    task = add one scorer file. (Search-R1 `reward_score/`, DR-Tulu `search_rewards/`.)
 
-3. **`eval/` is a standalone top-level category, two-phase (generate → score).**
-   Search-R1 and DeepResearcher collapsed eval into "val batches + reward inside
-   the trainer," which makes eval irreproducible outside a training run. We keep
-   one folder per benchmark + shared `samplers/` (DR-Tulu / QUEST pattern).
+3. **`eval/` is BenchFlow-run; a benchmark = a `tasks/` dir; agent + model are
+   `--agent`/`--model` run-time knobs.** *(Updated 2026-06-23.)* The original plan
+   was a standalone two-phase (generate → score) harness reusing `dr_agent`. In
+   practice we standardized on **[BenchFlow](https://github.com/benchflow-ai/benchflow)
+   as the sole eval runner**: a benchmark is a flat `tasks/` dir (the skillsbench
+   model — one task = one input → one trajectory → one score), and the agent
+   harness (pi / Claude Code / Codex / …) and model are runtime flags, so swapping
+   them needs no code. This keeps eval reproducible outside a training run (the
+   original concern) while making the harness pluggable. The two-phase
+   `eval_harness` package was removed; `libs/dr_agent` survives and would re-enter
+   eval as a future `--agent dr_agent` BenchFlow agent, not a parallel runner.
 
 4. **Tools are an HTTP service in `services/` (`search_server`).** Heavy retrieval
    deps (bm25/faiss) are isolated from the lib and trainer; backends swap behind a
@@ -56,7 +63,7 @@ chroma context-1-data-gen.
 libs/dr_agent/              shared agent loop + tools + reward registry + prompts
 services/search_server/     tool/search HTTP service (bm25/dense/web backends)
 data/datagen/               core/ + domains/<name>/ synthetic task generation
-eval/                       two-phase harness + benchmarks/<name>/ + samplers/
+eval/                       BenchFlow-run: benchmarks/<name>/tasks/ + _tooling/ (driver, serving, scorers)
 training/rl_deepresearch/   slime recipe: plugins/ + configs/ + launch/ + engine(README)
 ```
 

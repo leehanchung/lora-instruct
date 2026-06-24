@@ -27,5 +27,5 @@ for the model.
   `scripts/gen_tasks.py`), nothing else.
 - `benchmarks/*/tasks/` and `_runs/` are gitignored (regenerable); keep generators
   and tooling, not bulk data, in git.
-- `deep_research/` is the **parked** legacy dr_agent two-phase harness — leave it
-  alone until it's wrapped as a `--agent dr_agent` (see [`README.md`](README.md)).
+- One runner: **BenchFlow**. A different agent harness (dr_agent, Claude Code,
+  Codex, …) is a `--agent` choice, never a parallel runner or a new folder.

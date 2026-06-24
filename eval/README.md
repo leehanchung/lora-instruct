@@ -15,7 +15,6 @@ eval/
   _tooling/                         run everything from here
     Makefile  scripts/  pi/  docs/
   _runs/<agent>/<benchmark>/        run outputs (gitignored)
-  deep_research/                    PARKED — legacy dr_agent two-phase scaffold (see below)
 ```
 
 ## Run
@@ -34,10 +33,11 @@ the benchmark (its `tasks/`) stays fixed. Outputs land in
 setup, the SGLang engine, and the known BenchFlow proxy issue
 ([`_tooling/docs/benchflow-engine-500.md`](_tooling/docs/benchflow-engine-500.md)).
 
-## `deep_research/` is parked
+## Other harnesses?
 
-[`deep_research/`](deep_research/CLAUDE.md) is the older dr_agent **two-phase**
-(generate → score) harness — a separate runner. We're standardizing on BenchFlow
-as the sole runner, so it's parked for now: when `libs/dr_agent` is wrapped as a
-BenchFlow **agent**, "run dr_agent" becomes just another `--agent dr_agent` over
-the same `benchmarks/`, and this folder folds in. Until then, ignore it.
+There's one runner: **BenchFlow**. To run a different agent harness
+(`dr_agent`, Claude Code, Codex, …) on these benchmarks, register it as a
+BenchFlow **agent** and select it with `--agent` — the benchmarks (`tasks/`) and
+the runner don't change. The shared `libs/dr_agent` loop is the intended path for
+a future `--agent dr_agent`; until that wrapper exists, the dr_agent harness isn't
+wired here.
