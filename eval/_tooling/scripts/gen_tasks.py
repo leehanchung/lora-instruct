@@ -32,9 +32,13 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent       # eval/_tooling/scripts
 EVAL_ROOT = HERE.parents[1]                   # eval/  (benchmarks live directly under it)
 
-SIMPLEQA_CSV = (
+# SimpleQA source. An optional local copy of the CSV in the benchmark dir
+# (gitignored) lets gen read it offline; when absent, gen downloads the upstream
+# snapshot at the URL below.
+SIMPLEQA_CSV_URL = (
     "https://openaipublic.blob.core.windows.net/simple-evals/simple_qa_test_set.csv"
 )
+SIMPLEQA_CSV_LOCAL = EVAL_ROOT / "benchmarks" / "simpleqa" / "simple_qa_test_set.csv"
 
 # ---------------------------------------------------------------------------
 # Static task assets (identical across every task of a benchmark).
@@ -235,8 +239,11 @@ def _write_task(task_dir: Path, *, benchmark: str, question: str, answer: str, n
 
 
 def gen_simpleqa(n: int) -> list[tuple[str, str]]:
-    with urllib.request.urlopen(SIMPLEQA_CSV) as resp:  # noqa: S310 (trusted URL)
-        text = resp.read().decode("utf-8")
+    if SIMPLEQA_CSV_LOCAL.exists():
+        text = SIMPLEQA_CSV_LOCAL.read_text(encoding="utf-8")
+    else:  # vendored copy missing — fetch the upstream snapshot
+        with urllib.request.urlopen(SIMPLEQA_CSV_URL) as resp:  # noqa: S310 (trusted URL)
+            text = resp.read().decode("utf-8")
     rows = list(csv.DictReader(io.StringIO(text)))
     out = []
     for row in rows[:n]:

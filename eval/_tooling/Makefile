@@ -27,12 +27,25 @@ N ?= 50
 # ENGINE_PORT: local engine — SGLang 30000, vLLM 8000
 ENGINE_PORT ?= 30000
 ENGINE_URL ?= http://localhost:$(ENGINE_PORT)/v1
+# Token budget for the self-hosted model. CRITICAL: without an explicit maxTokens,
+# benchflow's pi-acp registers the model with maxTokens = its own _DEFAULT_MAX_TOKENS
+# (16384) and pi then asks SGLang for a completion that large — prompt+completion
+# overflows the 16384 context, so SGLang rejects EVERY call and litellm mislabels it
+# a transient HTTP 500 (errored=all). Cap the completion well under ENGINE_CONTEXT so
+# input+output fits. See docs/benchflow-engine-500.md.
+ENGINE_CONTEXT ?= 16384
+ENGINE_MAXTOK ?= 2048
+# bare model id (strip the vllm/ provider prefix) for pi's model-registry entry
+MODEL_ID := $(patsubst vllm/%,%,$(MODEL))
+# compact JSON (NO spaces — single-quoted in the recipe so bash doesn't brace-expand it)
+ENGINE_MODELS := [{"id":"$(MODEL_ID)","name":"$(MODEL_ID)","contextWindow":$(ENGINE_CONTEXT),"maxTokens":$(ENGINE_MAXTOK),"reasoning":false,"input":["text"]}]
 
 # Self-hosted models (BenchFlow's `vllm/` provider = any local OpenAI endpoint)
-# need the engine URL injected + a placeholder key, and a reachable engine.
-# First-party agents/models (claude/codex/…) bring their own auth, so skip both.
+# need the engine URL injected + a placeholder key + a model entry that caps
+# maxTokens (above), and a reachable engine. First-party agents/models
+# (claude/codex/…) bring their own auth + metadata, so skip all of it.
 ifneq ($(findstring vllm/,$(MODEL)),)
-  ENGINE_ENV := --agent-env BENCHFLOW_PROVIDER_BASE_URL=$(ENGINE_URL) --agent-env OPENAI_API_KEY=dummy-key
+  ENGINE_ENV := --agent-env BENCHFLOW_PROVIDER_BASE_URL=$(ENGINE_URL) --agent-env OPENAI_API_KEY=dummy-key --agent-env 'BENCHFLOW_PROVIDER_MODELS=$(ENGINE_MODELS)'
   ENGINE_DEP := check-engine
 else
   ENGINE_ENV :=
