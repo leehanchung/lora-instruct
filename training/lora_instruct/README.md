@@ -14,44 +14,61 @@ Run everything from this directory:
 
 ```bash
 cd training/lora_instruct/
-poetry install
+uv sync          # training stack only; add --extra inference for vllm/openai
 ```
 
 Train a LoRA adapter on top of a base model:
 
 ```bash
-poetry run python finetune.py \
-    --base_model 'togethercomputer/RedPajama-INCITE-Base-7B-v0.1' \
-    --output_dir './lora-redpajama'
+uv run python finetune.py \
+    --base_model 'Qwen/Qwen2.5-1.5B' \
+    --output_dir './lora-qwen'
 ```
 
-Default dataset is `yahma/alpaca-cleaned`; override with `--data_path`. See
-`TrainConfig` in `finetune.py` for the full set of CLI flags (batch size,
-LoRA rank, dropout, target modules, prompt template, etc.).
-
-To fine-tune on an NVIDIA 2000-series GPU or earlier, comment out the
-following line in `finetune.py`:
-
-```python
-model = prepare_model_for_int8_training(model)
-```
-
-## Distributed Training (HuggingFace Accelerate)
-
-For multi-GPU training, set the world size and visible devices, then launch
-with `torchrun`:
+Train **Qwen3.5-9B** with 4-bit QLoRA (fits one RTX 4090):
 
 ```bash
-export WORLD_SIZE=2
-export CUDA_VISIBLE_DEVICES=0,1
-
-torchrun \
-    --nproc_per_node=2 \
-    --master_port=1234 \
-    finetune.py \
-    --base_model 'togethercomputer/RedPajama-INCITE-Base-7B-v0.1' \
-    --output_dir './lora-redpajama'
+uv run python finetune.py \
+    --base_model 'Qwen/Qwen3.5-9B' \
+    --output_dir './lora-qwen3.5-9b' \
+    --bits 4 --micro_batch_size 1 --cutoff_len 512
 ```
+
+Default dataset is `yahma/alpaca-cleaned`; override with `--data_path`. See the
+`train()` signature in `finetune.py` for the full set of CLI flags (batch size,
+LoRA rank, dropout, target modules, prompt template, etc.).
+
+By default training runs in **bf16** with no quantization. To save memory on a
+larger base model, enable quantized **QLoRA** with `--bits 4` (nf4) or `--bits 8`
+(int8) — both use `bitsandbytes` and `prepare_model_for_kbit_training`
+under the hood. `--gradient_checkpointing` (on by default) further trades compute
+for memory. `--lora_target_modules` defaults to `all-linear` (PEFT auto-targets
+every linear layer, so it works across architectures).
+
+> Dependencies are managed with **uv** (`uv.lock`). `uv sync` installs the lean
+> training stack; the vllm/openai inference deps live in an optional extra
+> (`uv sync --extra inference`).
+
+## Distributed Training (multi-GPU DDP)
+
+For multi-GPU training, launch with `torchrun` — it sets `RANK`/`LOCAL_RANK`/
+`WORLD_SIZE` for you (don't export them yourself). `finetune.py` detects DDP, pins
+a full copy of the model to each rank's GPU, and splits the grad-accum across
+ranks so `--batch_size` stays the global effective batch:
+
+```bash
+uv run torchrun \
+    --nproc_per_node=2 \
+    --master_port=29501 \
+    finetune.py \
+    --base_model 'Qwen/Qwen3.5-9B' \
+    --bits 4 \
+    --output_dir './lora-qwen3.5-9b'
+```
+
+`--nproc_per_node` = number of GPUs. Restrict which GPUs to use with
+`CUDA_VISIBLE_DEVICES=0,1`. On startup each rank logs its placement, e.g.
+`[rank 0/2] model params on cuda:0` / `[rank 1/2] model params on cuda:1`.
 
 ## Trained Models
 
@@ -73,13 +90,19 @@ Stanford Alpaca:
 
 ### Training Hardware Spec
 
-```
-Ubuntu 20.04.1 LTS (WSL2)
+Verified working on:
 
-Driver Version: 531.41
-CUDA Version: 12.1
-cuDNN version: 8.5.0
 ```
+WSL2 (Linux), uv-managed env
+2 × NVIDIA GeForce RTX 4090 (24 GB, sm_89)
+Driver 591.86 (CUDA 13.1 capable)
+torch 2.11.0+cu130 · transformers 5.x · peft 0.19 · bitsandbytes 0.49
+```
+
+Verified: Qwen3.5-9B 4-bit QLoRA trains on a single 4090, and on both via
+`torchrun --nproc_per_node=2` (DDP, each rank pins a full copy to its GPU). The
+PyTorch wheels bundle their own CUDA runtime, so the system `nvcc` (11.7 here) is
+irrelevant — no kernels are compiled from source.
 
 ## Where things live
 
