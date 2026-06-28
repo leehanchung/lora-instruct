@@ -1,8 +1,7 @@
 import os
 import sys
 import warnings
-from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import fire
 import torch
@@ -11,23 +10,21 @@ from dotenv import load_dotenv
 from peft import (
     LoraConfig,
     get_peft_model,
-    get_peft_model_state_dict,
-    # prepare_model_for_int8_training,
+    prepare_model_for_kbit_training,
     set_peft_model_state_dict,
 )
 from transformers import (
-    AutoConfig,
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
     DataCollatorForSeq2Seq,
-    PreTrainedModel,
-    PreTrainedTokenizer,
+    EarlyStoppingCallback,
     Trainer,
     TrainingArguments,
 )
 from transformers.tokenization_utils_base import logger as tokenization_logger
 
+from utils.monitoring import MonitorCallback
 from utils.prompter import Prompter
 
 load_dotenv()
@@ -38,31 +35,6 @@ warnings.filterwarnings(
     module="transformers.tokenization_utils_base",
 )
 tokenization_logger.setLevel("ERROR")
-if torch.cuda.is_available():
-    torch.cuda.empty_cache()
-
-
-@dataclass
-class TrainConfig:
-    base_model: str
-    data_path: str = "yahma/alpaca-cleaned"
-    output_dir: str = "./lora-alpaca"
-    device_map: str = "auto"
-    batch_size: int = 128
-    micro_batch_size: int = 4
-    num_epochs: int = 3
-    learning_rate: float = 3e-4
-    cutoff_len: int = 256
-    val_set_size: int = 2000
-    lora_r: int = 8
-    lora_alpha: int = 16
-    lora_dropout: float = 0.05
-    lora_target_modules: List[str] = field(default_factory=lambda: ["up_proj"])
-    train_on_inputs: bool = True
-    add_eos_token: bool = False
-    group_by_length: bool = False
-    resume_from_checkpoint: Optional[str] = None
-    prompt_template_name: str = "alpaca"
 
 
 class TokenizerHelper:
@@ -80,7 +52,6 @@ class TokenizerHelper:
             prompt,
             truncation=True,
             max_length=self.cutoff_len,
-            # Set padding to 'max_length' instead of False for GPTNeoXTokenizerFast???
             padding=False,
             return_tensors=None,
         )
@@ -91,6 +62,7 @@ class TokenizerHelper:
         ):
             result["input_ids"].append(self.tokenizer.eos_token_id)
             result["attention_mask"].append(1)
+        result["labels"] = result["input_ids"].copy()
         return result
 
     def generate_and_tokenize_prompt(self, data_point):
@@ -113,68 +85,8 @@ class TokenizerHelper:
 
             tokenized_full_prompt["labels"] = [
                 -100
-            ] * user_prompt_len + tokenized_full_prompt["input_ids"][
-                user_prompt_len:
-            ]  # could be sped up, probably
-        else:
-            tokenized_full_prompt["labels"] = tokenized_full_prompt["input_ids"]
-        # print(tokenized_full_prompt)
+            ] * user_prompt_len + tokenized_full_prompt["input_ids"][user_prompt_len:]
         return tokenized_full_prompt
-
-
-def setup_model(config: TrainConfig) -> Tuple[PreTrainedModel, PreTrainedTokenizer]:
-    quantization_config = BitsAndBytesConfig(llm_int8_enable_fp32_cpu_offload=True)
-    model = AutoModelForCausalLM.from_pretrained(
-        config.base_model,
-        trust_remote_code=True,
-        load_in_8bit=True,
-        torch_dtype=torch.bfloat16,
-        device_map=config.device_map,
-        quantization_config=quantization_config,
-    )
-    tokenizer = AutoTokenizer.from_pretrained(config.base_model)
-
-    # LoRA configuration
-    lora_config = LoraConfig(
-        r=config.lora_r,
-        lora_alpha=config.lora_alpha,
-        target_modules=config.lora_target_modules,
-        lora_dropout=config.lora_dropout,
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
-    model = get_peft_model(model, lora_config)
-
-    return model, tokenizer
-
-
-def load_data(tokenizer, config: TrainConfig) -> Tuple:
-    """TODO: Not working yet.
-
-    Args:
-        config (TrainConfig): _description_
-
-    Returns:
-        Tuple: _description_
-    """
-    # Load the dataset
-    dataset = load_dataset(config.dataset_name)
-
-    tokenized_dataset = dataset.map(tokenizer, batched=True)
-
-    # Data collator
-    data_collator = DataCollatorForSeq2Seq(tokenizer=tokenizer, mlm=False)
-
-    # Split the dataset into train, validation and (optionally) test sets
-    train_dataset = tokenized_dataset["train"]
-    val_dataset = tokenized_dataset["validation"]
-
-    if "test" in tokenized_dataset:
-        test_dataset = tokenized_dataset["test"]
-    else:
-        test_dataset = None
-
-    return train_dataset, val_dataset, test_dataset, data_collator
 
 
 def train(
@@ -186,216 +98,251 @@ def train(
     batch_size: int = 128,
     micro_batch_size: int = 4,
     num_epochs: int = 3,
+    max_steps: int = -1,  # >0 caps total optimizer steps (handy for smoke tests)
     learning_rate: float = 3e-4,
     cutoff_len: int = 256,
     val_set_size: int = 2000,
+    # precision / memory
+    bits: int = 0,  # 0 = bf16 (no quant), 4 = QLoRA nf4, 8 = int8
+    bf16: bool = True,
+    gradient_checkpointing: bool = True,
+    use_compile: bool = False,  # torch.compile — off by default (flaky with PEFT/DDP)
     # lora hyperparams
     lora_r: int = 8,
     lora_alpha: int = 16,
     lora_dropout: float = 0.05,
-    lora_target_modules: List[str] = None,
+    # None -> "all-linear" (PEFT auto-targets every linear layer, arch-agnostic)
+    lora_target_modules: Optional[List[str]] = None,
     train_on_inputs: bool = True,  # if False, masks out inputs in loss
-    add_eos_token: bool = False,
-    group_by_length: bool = False,  # faster, but produces an odd training loss curve
-    resume_from_checkpoint: str = None,  # either training checkpoint or final adapter
-    prompt_template_name: str = "alpaca",  # Prompt template to use, default to Alpaca
+    add_eos_token: bool = True,
+    group_by_length: bool = False,  # deprecated/no-op: removed from transformers 5 TrainingArguments
+    resume_from_checkpoint: Optional[str] = None,  # checkpoint or final adapter
+    prompt_template_name: str = "alpaca",  # Prompt template to use, default Alpaca
+    # logging / monitoring
+    logging_steps: int = 10,
+    eval_steps: int = 200,
+    save_steps: int = 200,
+    seed: int = 42,
+    wandb_project: str = "",
+    wandb_run_name: str = "",
+    eval_samples: int = 0,  # >0: generate from N held-out prompts each eval
+    eval_sample_new_tokens: int = 128,
+    early_stopping_patience: int = 0,  # >0: stop after N evals w/o eval_loss improvement
 ):
-    if lora_target_modules is None:
-        lora_target_modules = ["up_proj"]
-    if int(os.environ.get("LOCAL_RANK", 0)) == 0:
-        print(
-            f"\n\n\nLoRA fine-tuning model with params:\n"
-            f"base_model: {base_model}\n"
-            f"data_path: {data_path}\n"
-            f"output_dir: {output_dir}\n"
-            f"batch_size: {batch_size}\n"
-            f"micro_batch_size: {micro_batch_size}\n"
-            f"num_epochs: {num_epochs}\n"
-            f"learning_rate: {learning_rate}\n"
-            f"cutoff_len: {cutoff_len}\n"
-            f"val_set_size: {val_set_size}\n"
-            f"lora_r: {lora_r}\n"
-            f"lora_alpha: {lora_alpha}\n"
-            f"lora_dropout: {lora_dropout}\n"
-            f"lora_target_modules: {lora_target_modules}\n"
-            f"train_on_inputs: {train_on_inputs}\n"
-            f"add_eos_token: {add_eos_token}\n"
-            f"group_by_length: {group_by_length}\n"
-            f"resume_from_checkpoint: {resume_from_checkpoint or False}\n"
-            f"prompt template: {prompt_template_name}\n"
-        )
-    assert (
-        base_model
-    ), "Please specify a --base_model, e.g. --base_model='huggyllama/llama-7b'"
+    assert base_model, (
+        "Please specify a --base_model, e.g. --base_model='Qwen/Qwen2.5-1.5B'"
+    )
+    assert bits in (0, 4, 8), "--bits must be one of 0 (bf16), 4 (nf4), 8 (int8)"
 
+    # ---- distributed setup (torchrun sets RANK/LOCAL_RANK/WORLD_SIZE) ----
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    ddp = world_size != 1
+    is_main = local_rank == 0
+    # On DDP every rank holds a full copy of the model pinned to its own GPU.
+    device_map = {"": local_rank} if ddp else "auto"
+    # batch_size is the global effective batch; split the grad-accum across ranks.
     gradient_accumulation_steps = batch_size // micro_batch_size
+    if ddp:
+        gradient_accumulation_steps = max(1, gradient_accumulation_steps // world_size)
+
+    use_wandb = bool(wandb_project)
+    if use_wandb and is_main:
+        os.environ["WANDB_PROJECT"] = wandb_project
+
+    if is_main:
+        print(
+            f"\nLoRA fine-tuning with params:\n"
+            f"  base_model: {base_model}\n"
+            f"  data_path: {data_path}\n"
+            f"  output_dir: {output_dir}\n"
+            f"  world_size: {world_size} (ddp={ddp})\n"
+            f"  batch_size: {batch_size} | micro: {micro_batch_size} | "
+            f"grad_accum: {gradient_accumulation_steps}\n"
+            f"  bits: {bits} | bf16: {bf16} | grad_ckpt: {gradient_checkpointing}\n"
+            f"  lora: r={lora_r} alpha={lora_alpha} dropout={lora_dropout} "
+            f"targets={lora_target_modules or 'all-linear'}\n"
+            f"  epochs: {num_epochs} | lr: {learning_rate} | cutoff: {cutoff_len}\n"
+        )
 
     prompter = Prompter(prompt_template_name)
 
-    device_map = "auto"
-    world_size = int(os.environ.get("WORLD_SIZE", 1))
-    ddp = world_size != 1
-    if ddp:
-        device_map = {"": int(os.environ.get("LOCAL_RANK") or 0)}
-        gradient_accumulation_steps = gradient_accumulation_steps // world_size
-    print(f"device map: {device_map}")
+    # ---- tokenizer ----
+    tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right"  # right pad for causal-LM training
 
-    #
-    # Model loading
-    #
-    BitsAndBytesConfig(llm_int8_enable_fp32_cpu_offload=True)
-
-    # for mpt
-    config = AutoConfig.from_pretrained(
-        "mistralai/Mistral-7B-v0.1", trust_remote_code=True, revision="main"
-    )
-    config.update({"max_seq_len": 4096})
-    # config.attn_config['attn_impl'] = 'triton'
+    # ---- model ----
+    quantization_config = None
+    if bits == 4:
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+        )
+    elif bits == 8:
+        quantization_config = BitsAndBytesConfig(load_in_8bit=True)
 
     model = AutoModelForCausalLM.from_pretrained(
-        # 'mosaicml/mpt-7b',
         base_model,
-        config=config,
-        # base_model,
-        # load_in_8bit=True,
-        torch_dtype=torch.bfloat16,
+        quantization_config=quantization_config,
+        dtype=torch.bfloat16 if bits == 0 else None,
         device_map=device_map,
-        # quantization_config=quantization_config,
-        # load_in_8bit_fp32_cpu_offload=True
         trust_remote_code=True,
-        revision="main",
     )
 
-    # tokenizer = AutoTokenizer.from_pretrained(base_model)
-    tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
+    if quantization_config is not None:
+        model = prepare_model_for_kbit_training(
+            model, use_gradient_checkpointing=gradient_checkpointing
+        )
+    elif gradient_checkpointing:
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": False}
+        )
+        model.enable_input_require_grads()
 
-    tokenizer.pad_token_id = 0  # unk. we want this to be different from the eos token
-    tokenizer.padding_side = "left"  # Allow batched inference
-
-    #
-    # 8-bit training
-    #
-    # had to turn int8 training off for some reason. could it be the titan rtx?
-    # turned it on and kinda working now, but wtf?
-    # model = prepare_model_for_int8_training(model)
-
-    #
-    # LoRA
-    #
-    config = LoraConfig(
+    lora_config = LoraConfig(
         r=lora_r,
         lora_alpha=lora_alpha,
-        target_modules=lora_target_modules,
+        target_modules=lora_target_modules or "all-linear",
         lora_dropout=lora_dropout,
         bias="none",
         task_type="CAUSAL_LM",
     )
-    model = get_peft_model(model, config)
+    model = get_peft_model(model, lora_config)
+    model.config.use_cache = False
+    print(
+        f"[rank {local_rank}/{world_size}] model params on {next(model.parameters()).device}",
+        flush=True,
+    )
+    if is_main:
+        model.print_trainable_parameters()
 
+    # ---- data ----
     if data_path.endswith(".json") or data_path.endswith(".jsonl"):
         data = load_dataset("json", data_files=data_path)
     else:
         data = load_dataset(data_path)
 
     if resume_from_checkpoint:
-        # Check the available weights and load them
         checkpoint_name = os.path.join(
-            resume_from_checkpoint, "pytorch_model.bin"
-        )  # Full checkpoint
+            resume_from_checkpoint, "adapter_model.safetensors"
+        )
         if not os.path.exists(checkpoint_name):
-            checkpoint_name = os.path.join(
-                resume_from_checkpoint, "adapter_model.bin"
-            )  # only LoRA model - LoRA config above has to fit
-            resume_from_checkpoint = False  # So the trainer won't try loading its state
-        # The two files above have a different name depending on how they were saved,
-        # but are actually the same.
+            checkpoint_name = os.path.join(resume_from_checkpoint, "adapter_model.bin")
+            resume_from_checkpoint = False  # let Trainer skip its own state load
         if os.path.exists(checkpoint_name):
             print(f"Restarting from {checkpoint_name}")
-            adapters_weights = torch.load(checkpoint_name)
+            from safetensors.torch import load_file
+
+            adapters_weights = (
+                load_file(checkpoint_name)
+                if checkpoint_name.endswith(".safetensors")
+                else torch.load(checkpoint_name)
+            )
             set_peft_model_state_dict(model, adapters_weights)
         else:
             print(f"Checkpoint {checkpoint_name} not found")
 
-    # Be more transparent about the % of trainable params.
-    model.print_trainable_parameters()
-
     tokenizer_helper = TokenizerHelper(
         prompter, tokenizer, train_on_inputs, cutoff_len, add_eos_token
     )
-
+    remove_cols = data["train"].column_names
+    sample_rows = []  # raw held-out prompts for the sample-generation monitor
     if val_set_size > 0:
         train_val = data["train"].train_test_split(
-            test_size=val_set_size, shuffle=True, seed=42
+            test_size=val_set_size, shuffle=True, seed=seed
         )
+        if eval_samples > 0:
+            n = min(eval_samples, len(train_val["test"]))
+            sample_rows = [train_val["test"][i] for i in range(n)]
         train_data = (
             train_val["train"]
             .shuffle()
-            .map(tokenizer_helper.generate_and_tokenize_prompt)
+            .map(
+                tokenizer_helper.generate_and_tokenize_prompt,
+                remove_columns=remove_cols,
+            )
         )
         val_data = (
             train_val["test"]
             .shuffle()
-            .map(tokenizer_helper.generate_and_tokenize_prompt)
+            .map(
+                tokenizer_helper.generate_and_tokenize_prompt,
+                remove_columns=remove_cols,
+            )
         )
     else:
         train_data = (
-            data["train"].shuffle().map(tokenizer_helper.generate_and_tokenize_prompt)
+            data["train"]
+            .shuffle()
+            .map(
+                tokenizer_helper.generate_and_tokenize_prompt,
+                remove_columns=remove_cols,
+            )
         )
         val_data = None
 
-    print(train_data[0])
+    callbacks = [
+        MonitorCallback(
+            prompter=prompter,
+            tokenizer=tokenizer,
+            sample_rows=sample_rows,
+            sample_new_tokens=eval_sample_new_tokens,
+            is_main=is_main,
+        )
+    ]
+    if early_stopping_patience > 0 and val_set_size > 0:
+        callbacks.append(
+            EarlyStoppingCallback(early_stopping_patience=early_stopping_patience)
+        )
 
-    if not ddp and torch.cuda.device_count() > 1:
-        # keeps Trainer from trying its own DataParallelism
-        # when more than 1 gpu is available
-        model.is_parallelizable = True
-        model.model_parallel = True
-
-    use_wandb = False
     trainer = Trainer(
         model=model,
         train_dataset=train_data,
         eval_dataset=val_data,
+        processing_class=tokenizer,
+        callbacks=callbacks,
         args=TrainingArguments(
             per_device_train_batch_size=micro_batch_size,
             gradient_accumulation_steps=gradient_accumulation_steps,
             warmup_steps=100,
             num_train_epochs=num_epochs,
+            max_steps=max_steps,
             learning_rate=learning_rate,
-            # fp16=True,
-            logging_steps=10,
+            bf16=bf16,
+            logging_steps=logging_steps,
             optim="adamw_torch",
             eval_strategy="steps" if val_set_size > 0 else "no",
             save_strategy="steps",
-            eval_steps=200 if val_set_size > 0 else None,
-            save_steps=200,
+            eval_steps=eval_steps if val_set_size > 0 else None,
+            save_steps=save_steps,
             output_dir=output_dir,
             save_total_limit=3,
-            load_best_model_at_end=True if val_set_size > 0 else False,
+            load_best_model_at_end=val_set_size > 0,
+            metric_for_best_model="eval_loss",
+            greater_is_better=False,
             ddp_find_unused_parameters=False if ddp else None,
-            group_by_length=group_by_length,
-            report_to="wandb" if use_wandb else None,
-            run_name="wandb_run_name" if use_wandb else None,
+            report_to="wandb" if use_wandb else "none",
+            run_name=wandb_run_name or None,
+            seed=seed,
         ),
         data_collator=DataCollatorForSeq2Seq(
             tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
         ),
     )
-    model.config.use_cache = False
 
-    old_state_dict = model.state_dict
-    model.state_dict = (
-        lambda self, *_, **__: get_peft_model_state_dict(self, old_state_dict())
-    ).__get__(model, type(model))
-
-    if torch.__version__ >= "2" and sys.platform != "win32":
+    if use_compile and torch.__version__ >= "2" and sys.platform != "win32":
         model = torch.compile(model)
 
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
     model.save_pretrained(output_dir)
-
-    print("\n If there's a warning about missing keys above, please disregard :)")
+    if is_main:
+        tokenizer.save_pretrained(output_dir)
+        print("\nDone. LoRA adapter saved to", output_dir)
 
 
 if __name__ == "__main__":

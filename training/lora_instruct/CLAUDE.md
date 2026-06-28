@@ -10,23 +10,31 @@ This project is run from its own directory, not the repo root:
 cd training/lora_instruct/
 ```
 
-- **Setup**: `poetry install`
-- **Lint**: `poetry run ruff check .` (fix with `--fix`)
-- **Test**: `poetry run pytest`
-- **CLI help**: `poetry run python finetune.py --help`
-- **Train**: `poetry run python finetune.py --base_model '<model>' --output_dir '<dir>'`
+- **Setup**: `uv sync` (training stack only; add `--extra inference` for vllm/openai)
+- **Lint**: `uv run ruff check .` (fix with `--fix`)
+- **Test**: `uv run pytest`
+- **CLI help**: `uv run python finetune.py --help`
+- **Train**: `uv run python finetune.py --base_model '<model>' --output_dir '<dir>'`
 
 ## Notes
 
-- This project still uses **poetry** (`pyproject.toml` + `poetry.lock`). The
-  apps under `apps/` use `uv` — do not confuse the two.
-- `finetune.py` reads its training config from CLI flags via `fire`. See
-  `TrainConfig` at the top of `finetune.py` for the full list of knobs
-  (batch size, LoRA rank, target modules, prompt template, etc.).
+- This project uses **uv** (`pyproject.toml` + `uv.lock`), like the rest of the
+  monorepo. `uv sync` installs the lean training stack; vllm/openai/tiktoken are
+  in an optional `inference` extra (`uv sync --extra inference`). The CUDA build
+  of torch (`2.11.x`, cu13) comes straight from PyPI — no extra index needed, and
+  the system `nvcc` is irrelevant (torch wheels bundle their own CUDA runtime).
+- `finetune.py` reads its training config from CLI flags via `fire`. See the
+  `train()` signature in `finetune.py` for the full list of knobs (batch size,
+  LoRA rank, target modules, `--bits` for QLoRA, `--gradient_checkpointing`,
+  prompt template, etc.). Default base precision is bf16; `--bits 4/8` enables
+  quantized QLoRA via `bitsandbytes`. `--lora_target_modules` defaults to
+  `all-linear`.
 - Default dataset is `yahma/alpaca-cleaned`; default prompt template is
   `alpaca` (see `templates/alpaca.json`).
-- Distributed training uses HuggingFace `accelerate` / `torchrun` — see the
-  README for the multi-GPU invocation.
+- Multi-GPU is **DDP via `torchrun --nproc_per_node=<N>`** (don't export
+  `WORLD_SIZE` yourself — torchrun sets it). `train()` pins a full model copy to
+  each rank's GPU and splits grad-accum across ranks. Each rank logs its
+  placement (`[rank i/N] model params on cuda:i`). See the README invocation.
 
 ## Layout
 
