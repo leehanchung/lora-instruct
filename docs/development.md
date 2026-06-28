@@ -1,9 +1,13 @@
 # Development Guide
 
+> Scope: this guide covers `training/lora_instruct` (uv-managed). Run commands from
+> that directory.
+
 ## Setup
 
 ```bash
-poetry install
+cd training/lora_instruct
+uv sync          # training stack only; add --extra inference for vllm/openai
 ```
 
 ## Linting
@@ -11,41 +15,42 @@ poetry install
 Ruff is configured in `pyproject.toml` with rules: E, W, F, I, C, B (ignoring E501, B008, C901).
 
 ```bash
-poetry run ruff check .
-poetry run ruff check --fix .
+uv run ruff check .
+uv run ruff check --fix .
 ```
 
 ## Testing
 
 ```bash
-poetry run pytest
+uv run pytest
 ```
 
 ## Training
 
 ```bash
 cd training/lora_instruct
-python finetune.py --base_model 'togethercomputer/RedPajama-INCITE-Base-7B-v0.1' --output_dir './lora-redpajama'
+uv run python finetune.py --base_model 'Qwen/Qwen2.5-1.5B' --output_dir './lora-qwen'
 ```
 
-All training hyperparameters are CLI flags — see `train()` function signature in `training/lora_instruct/finetune.py` for the full list.
+All training hyperparameters are CLI flags — see the `train()` function signature in `training/lora_instruct/finetune.py` for the full list (LoRA rank, `--bits` for QLoRA, `--gradient_checkpointing`, etc.).
 
-### Distributed Training
+### Distributed Training (multi-GPU DDP)
+
+`torchrun` sets `RANK`/`LOCAL_RANK`/`WORLD_SIZE` — don't export them yourself.
 
 ```bash
 cd training/lora_instruct
-export WORLD_SIZE=2
-export CUDA_VISIBLE_DEVICES=0,1
-torchrun --nproc_per_node=2 --master_port=1234 finetune.py \
-    --base_model 'togethercomputer/RedPajama-INCITE-Base-7B-v0.1' \
-    --output_dir './lora-redpajama'
+uv run torchrun --nproc_per_node=2 --master_port=29501 finetune.py \
+    --base_model 'Qwen/Qwen3.5-9B' --bits 4 \
+    --output_dir './lora-qwen3.5-9b'
 ```
 
 ## Inference Benchmarking
 
 ```bash
-cd training/lora_instruct/inference
-python bench.py --api-url https://api.openai.com/v1/chat/completions --model gpt-3.5-turbo
+cd training/lora_instruct
+uv sync --extra inference   # bench.py needs the inference deps (openai, vllm, ...)
+uv run python inference/bench.py --api-url https://api.openai.com/v1/chat/completions --model gpt-3.5-turbo
 ```
 
 Requires `OPENAI_API_KEY` in environment or `.env` file.
@@ -54,6 +59,5 @@ Requires `OPENAI_API_KEY` in environment or `.env` file.
 
 - Python 3.10+
 - Type hints on function signatures
-- Dataclasses for structured configs (see `TrainConfig`)
-- `python-fire` for CLI interfaces
+- `python-fire` for CLI interfaces (training knobs are `train()` args)
 - `python-dotenv` for environment variable loading

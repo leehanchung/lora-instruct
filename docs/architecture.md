@@ -26,7 +26,7 @@ training/lora_instruct/
 │   └── alpaca.json          # Alpaca prompt template (prompt_input / prompt_no_input)
 ├── dataset/                 # Training datasets (Alpaca variants, prompts.jsonl)
 ├── notebook/                # Jupyter notebooks for model experimentation
-└── pyproject.toml           # Poetry project config and dependencies
+└── pyproject.toml           # uv project config and dependencies (+ uv.lock)
 ```
 
 ## Key Components

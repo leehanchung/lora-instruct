@@ -27,7 +27,7 @@ SMILE-factory/
 ├── training/
 │   └── lora_instruct/         ← Python project #3 (LoRA code)
 │       ├── pyproject.toml     ← own deps, own ruff rules, own .venv
-│       ├── poetry.lock
+│       ├── uv.lock
 │       ├── finetune.py
 │       ├── utils/, templates/, dataset/, inference/, notebook/
 │       ├── CLAUDE.md
