@@ -43,6 +43,9 @@ the `make eval` driver, not from per-benchmark config.
 
 ```
 eval/
+  benchmarks/simpleqa/
+    simple_qa_test_set.csv        optional local dataset copy (gitignored); gen fetches from the upstream URL if absent
+    tasks/<id>/                   generated task dirs (gitignored): task.md + verifier/
   benchmarks/<name>/tasks/<id>/   generated task dirs (gitignored): task.md + verifier/
   _tooling/                       run everything from here
     Makefile                      the `make eval BENCHMARK/AGENT/MODEL` driver
@@ -98,10 +101,12 @@ make eval BENCHMARK=hotpotqa AGENT=claude MODEL=claude-haiku-4-5-20251001
 `make eval` is the runner; `AGENT`/`MODEL` are the only things you change to swap
 harness/model. Outputs land in `_runs/<agent>/<benchmark>/`.
 
-> **Heads-up:** the BenchFlow run currently 500s with the self-hosted SGLang engine
-> (see [`docs/benchflow-engine-500.md`](docs/benchflow-engine-500.md)). Until that's
-> fixed, `make eval-direct BENCHMARK=<b>` gives a Docker-free signal (pi → engine,
-> same tasks + scorer, **not** BenchFlow) → `_runs/_direct-debug/<benchmark>/report.json`.
+> **Heads-up:** `make eval` injects `BENCHFLOW_PROVIDER_MODELS` with a `maxTokens`
+> cap (`ENGINE_MAXTOK`, default 2048). Without it, benchflow's pi-acp asks SGLang for
+> a 16384-token completion that overflows the 16384 context and **every call 500s**
+> (resolved — see [`docs/benchflow-engine-500.md`](docs/benchflow-engine-500.md)).
+> For a quick Docker-free signal, `make eval-direct BENCHMARK=<b>` runs pi → engine
+> with the same tasks + scorer (**not** BenchFlow) → `_runs/_direct-debug/<benchmark>/report.json`.
 
 A BenchFlow job lands in `_runs/<agent>/<benchmark>/<timestamp>/` — per-task
 `reward.txt`/`result.json` + a job `summary.json`.
@@ -119,23 +124,20 @@ The run-configs point the host-side LiteLLM proxy at `http://localhost:30000/v1`
 (proxy → SGLang, both on the host). BenchFlow's `vllm/` prefix just means
 "self-hosted OpenAI API"; SGLang serves the same protocol.
 
-### ⚠️ Known issue: BenchFlow agentic run → HTTP 500 with a self-hosted engine
+### ✅ Resolved: BenchFlow agentic run → HTTP 500 with a self-hosted engine
 
-The **full agentic BenchFlow run currently fails** — every model call comes back
-to the agent as `provider api error … HTTP 500` (the engine itself returns 200).
-Every layer reproduces 200 in isolation on the host (engine, `litellm` lib, the
-route, BenchFlow's callback, its exact proxy config, pi's exact request); the 500
-only appears in the live run where the proxy is bound to `host.docker.internal`
-and pi streams from inside the sandbox — pointing at the container↔host streaming
-path under Docker-Desktop-WSL. (Note: BenchFlow's `vllm/` provider routes via
-litellm `openai/` + api_base, **not** `hosted_vllm/`.)
+Earlier, the full agentic run failed — every model call came back as `provider api
+error … HTTP 500` (the engine itself returned 200). **Root cause:** benchflow's
+pi-acp defaulted the model's `maxTokens` to `16384` (its `_DEFAULT_MAX_TOKENS`),
+so pi requested a completion as large as the *entire* 16384 context; `prompt +
+16384 > 16384`, so SGLang rejected every call with a context-length error that
+litellm mislabeled as a transient HTTP 500. **Fix:** `make eval` injects
+`BENCHFLOW_PROVIDER_MODELS` with `maxTokens=ENGINE_MAXTOK` (2048) so the completion
+fits. (Note: BenchFlow's `vllm/` provider routes via litellm `openai/` + api_base,
+**not** `hosted_vllm/`.)
 
-Full investigation, isolation matrix, repro recipe, and fix directions:
+Full investigation, proof, and the upstream-worthy notes:
 **[`docs/benchflow-engine-500.md`](docs/benchflow-engine-500.md)**.
-
-This blocks `make eval` (the BenchFlow runner) with the self-hosted engine. Until
-it's fixed, use `make eval-direct` for a Docker-free signal (below), or a
-first-party agent/model that doesn't go through the self-hosted path.
 
 ### Docker-Desktop-on-WSL networking patch
 
