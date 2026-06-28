@@ -54,10 +54,11 @@ case "$cmd" in
        && git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
       if git push --force-with-lease >/dev/null 2>&1; then
         echo "git-sync: rebased '$branch' onto origin/main and force-pushed (with lease); original push skipped." >&2
-      else
-        echo "git-sync: rebased '$branch' onto origin/main; force-push failed — re-push manually with --force-with-lease." >&2
+        exit 2
       fi
-      exit 2
+      # Force-push failed: don't block — let the original push run and surface git's error.
+      echo "git-sync: rebased '$branch' onto origin/main; force-push failed — re-push manually with --force-with-lease." >&2
+      exit 0
     fi
     ;;
 esac
