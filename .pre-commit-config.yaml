@@ -10,6 +10,8 @@ repos:
         args:
         -   --unsafe
     -   id: check-added-large-files
+        # machine-generated lockfiles are legitimately large (ML dep trees)
+        exclude: '\.lock$'
     -   id: check-xml
     -   id: check-toml
     -   id: check-json
