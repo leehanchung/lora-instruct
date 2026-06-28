@@ -60,7 +60,7 @@ eval/                       standalone two-phase harness (generate → score);
                            benchmarks/<name>/ + shared samplers/
 training/rl_deepresearch/   thin slime recipe: plugins/ (rollout + reward),
                            configs/ (YAML), launch/, engine/ (README only)
-training/lora_instruct/     existing SFT recipe (poetry) — unchanged
+training/lora_instruct/     existing SFT recipe (uv)
 ```
 
 Data flow:
