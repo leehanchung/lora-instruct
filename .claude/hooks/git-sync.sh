@@ -22,18 +22,25 @@ else
   cmd="$(printf '%s' "$input" | sed -n 's/.*"command"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
 fi
 
+# Cheap short-circuit: ignore commands that don't mention git at all. (The hook
+# matches on the Bash tool, not a command prefix, so it also sees chained
+# commands like `cd path && git push`.)
+case "$cmd" in *git*) ;; *) exit 0 ;; esac
+
 # Only act inside a git work tree.
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
 branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
 
 case "$cmd" in
   *"git switch -c"*|*"git checkout -b"*)
-    # Refresh local main so the about-to-be-created branch starts from latest.
-    git fetch -q origin main 2>/dev/null || exit 0
+    # Refresh local main (fast-forward only) so the new branch starts from latest.
     if [ "$branch" = "main" ]; then
-      git merge -q --ff-only origin/main 2>/dev/null || true
+      if git fetch -q origin main 2>/dev/null; then
+        git merge -q --ff-only origin/main 2>/dev/null || true
+      fi
     else
-      git branch -f main origin/main 2>/dev/null || true
+      # ff-only ref update — refuses (no-op) rather than discarding local-only main commits.
+      git fetch -q origin main:main 2>/dev/null || true
     fi
     ;;
   *"git push"*)

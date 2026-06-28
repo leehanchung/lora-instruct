@@ -7,7 +7,6 @@
           {
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/git-sync.sh",
-            "if": "Bash(git *)",
             "timeout": 30,
             "statusMessage": "Syncing branch from main…"
           }
