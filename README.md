@@ -1,9 +1,36 @@
+<p align="center">
+  <img src="assets/smile-factory-banner.png" alt="SMILE Factory" width="100%">
+</p>
+
 # SMILE-factory
 
-This repository hosts two projects:
+> *人造悪魔の実 ―「SMILE工場」* — the Artificial Devil Fruit "SMILE Factory"
 
-- **[Delulu](#delulu)** *(active)* — a Discord bot that dispatches Claude Code tasks to ephemeral Modal sandboxes. Lives under `apps/delulu_discord` and `apps/delulu_sandbox_modal`.
-- **[LoRA-Instruct](#lora-instruct)** — earlier SFT training recipe (HuggingFace PEFT + LoRA), now relocated to [`training/lora_instruct/`](training/lora_instruct/).
+A **playground** for **artificial / synthetic data**. In *One Piece*, the SMILE
+Factory mass-produces *artificial* Devil Fruits — synthetic stand-ins for natural
+powers, churned out by the vat-load from SAD. SMILE-factory is the analog: one
+factory for **manufacturing synthetic data to push AI further** — generate tasks,
+run them through agents, score the trajectories, feed the signal back into
+training. Raw questions in, model capability out.
+
+It's all one thing — eight zones of the same factory:
+
+| Zone | Where | What |
+|------|-------|------|
+| Task generation | [`data/datagen`](data/datagen/) | synthetic deep-research task gen |
+| Eval | [`eval`](eval/README.md) | BenchFlow agentic eval harness |
+| Agent loop | [`libs/dr_agent`](libs/dr_agent/) | shared loop / tools / reward registry (imported everywhere) |
+| Tool service | [`services/search_server`](services/search_server/) | search/tool HTTP server |
+| RL training | [`training/rl_deepresearch`](training/rl_deepresearch/) | slime RL recipe |
+| SFT training | [`training/lora_instruct`](training/lora_instruct/) | LoRA + PEFT instruct recipe |
+| Orchestrator | [`apps/delulu_discord`](apps/delulu_discord/) · [`apps/delulu_sandbox_modal`](apps/delulu_sandbox_modal/) | Discord → Claude Code → ephemeral Modal sandboxes |
+| Infra | [`infra`](infra/) | shared managed-agents platform |
+
+The deep-research loop is the spine: `data/datagen` → `eval` → `training/rl_deepresearch`,
+all over the shared `libs/dr_agent`. Architecture + rationale in
+[prd/deep-research-training-eval-infra.md](prd/deep-research-training-eval-infra.md).
+Two zones have their own walkthroughs below: **[Delulu](#delulu)** (the active
+orchestrator) and **[LoRA-Instruct](#lora-instruct)**.
 
 ---
 
