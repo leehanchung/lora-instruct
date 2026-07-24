@@ -61,7 +61,10 @@ Install `uv sync --extra eval`. Pinned public sources are:
 - MMLU `c30699e8356da336a370243923dbaf21066bb9fe`;
 - Toolathlon `3b647e60713703d653584c23ff185e3b6cd67722`.
 
-The evaluation CLI emits explicit subprocess commands and normalized output locations; it
-does not bundle upstream benchmark code. Toolathlon must be reported only after official
-preprocessing, execution, and verification complete. The recorded run has no Toolathlon
-score because admission never succeeded.
+The evaluation CLI deliberately keeps BFCL, lm-eval, and Toolathlon behind shell-free
+passthrough boundaries: after the subcommand, supply the complete command for the pinned
+upstream checkout. It does not reinterpret upstream flags or bundle benchmark code; the
+resolved benchmark YAML files document the recorded invocation. Endpoint smoke,
+tool-restraint scoring, and artifact verification have typed first-party arguments. Toolathlon
+must be reported only after official preprocessing, execution, and verification complete.
+The recorded run has no Toolathlon score because admission never succeeded.

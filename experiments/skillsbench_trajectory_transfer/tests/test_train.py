@@ -33,6 +33,9 @@ def test_config_yaml_and_dataset_validation(tmp_path):
     assert validate_dataset_records(rows, config.condition) == 1
     with pytest.raises(ValueError, match="attention-masked"):
         validate_dataset_records([{"input_ids": [1], "attention_mask": [0], "labels": [1]}])
+    with pytest.raises(ValueError, match="exceeding max_sequence_length=1"):
+        validate_dataset_records(rows, "matched", max_sequence_length=1)
+    assert validate_dataset_records(rows, "matched", max_sequence_length=2) == 1
 
 
 def test_pretokenized_collator_pads_without_tokenizer(monkeypatch):

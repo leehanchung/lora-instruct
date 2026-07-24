@@ -141,9 +141,11 @@ class PretokenizedCollator:
 
 
 def validate_dataset_records(
-    records: Iterable[Mapping[str, Any]], expected_condition: str | None = None
+    records: Iterable[Mapping[str, Any]],
+    expected_condition: str | None = None,
+    max_sequence_length: int | None = None,
 ) -> int:
-    """Validate token shapes, assistant supervision, and arm identity."""
+    """Validate token shapes, assistant supervision, arm identity, and length."""
     count = 0
     for index, record in enumerate(records):
         count += 1
@@ -157,6 +159,11 @@ def validate_dataset_records(
             raise ValueError(f"row {index} input_ids must be integers")
         if not input_ids or len(labels) != len(input_ids) or len(attention) != len(input_ids):
             raise ValueError(f"row {index} token and mask lengths do not match")
+        if max_sequence_length is not None and len(input_ids) > max_sequence_length:
+            raise ValueError(
+                f"row {index} has {len(input_ids)} tokens, exceeding max_sequence_length="
+                f"{max_sequence_length}; rebuild the corpus rather than truncating tool events"
+            )
         if any(value not in (0, 1) for value in attention):
             raise ValueError(f"row {index} attention_mask must contain only 0 or 1")
         if not any(label != -100 for label in labels):
@@ -241,9 +248,9 @@ def train(config: TrainConfig) -> dict[str, Any]:
         raise FileExistsError(f"refusing to overwrite non-empty output directory: {output}")
     output.mkdir(parents=True, exist_ok=True)
     train_dataset, validation_dataset = _load_splits(config)
-    validate_dataset_records(train_dataset, config.condition)
+    validate_dataset_records(train_dataset, config.condition, config.max_seq_length)
     if validation_dataset is not None:
-        validate_dataset_records(validation_dataset, config.condition)
+        validate_dataset_records(validation_dataset, config.condition, config.max_seq_length)
 
     tokenizer = AutoTokenizer.from_pretrained(
         config.model_name_or_path, revision=config.model_revision

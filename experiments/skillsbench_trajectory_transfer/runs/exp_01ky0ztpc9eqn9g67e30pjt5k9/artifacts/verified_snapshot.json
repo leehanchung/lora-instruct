@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "observed_at": "2026-07-24T07:05:00Z",
+  "observed_at": "2026-07-24T06:52:00Z",
   "probe": "Silico durable artifact metadata stat; no object bodies downloaded",
   "objects": {
     "artifact://han-solo-757b7c/experiments/exp_01ky0ztpc9eqn9g67e30pjt5k9/training/no_skill_success/seed17-v1/final_adapter.tar.gz": {
