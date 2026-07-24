@@ -9,7 +9,8 @@
    corpora, caches, or raw trajectories.
 4. Describe each external object in `artifacts/manifest.json` with a full resolvable location,
    role, byte size, checksum/etag, provider version, and loading recipe. Capture an independent
-   metadata-only verification snapshot.
+   metadata-only verification snapshot. Generate `checksums.sha256` after all run files settle;
+   it covers every committed file in the run except itself.
 5. Add the run to `runs/index.json` and run `make check`, `make reproduce-analysis RUN=<EID>`,
    `make report RUN=<EID>`, and `make verify-artifacts RUN=<EID>`.
 6. A new run may use a different acceptance comparator, but its tolerance and target values

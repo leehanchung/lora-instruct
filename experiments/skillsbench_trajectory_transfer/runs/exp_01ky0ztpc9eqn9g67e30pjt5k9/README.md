@@ -13,6 +13,8 @@ unmeasured.
 - [Completed HTML report](report/index.html)
 - [Resolved configuration](config.resolved.yaml)
 - [Run provenance](provenance.json)
+- [Exact reproduction result](reproduction.json)
+- [SHA-256 integrity manifest](checksums.sha256)
 - [Primary metrics](metrics/final_metrics.json)
 - [Paired analysis](metrics/full_paired_analysis.json)
 - [Normalized paired rows](data/normalized_paired_rows.jsonl)

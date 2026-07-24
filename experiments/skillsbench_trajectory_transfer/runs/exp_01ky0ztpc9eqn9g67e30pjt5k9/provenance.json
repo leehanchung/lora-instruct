@@ -6,6 +6,11 @@
   "run_date": "2026-07-21",
   "seed": 17,
   "outcome": "inconclusive",
+  "integrity": {
+    "algorithm": "sha256",
+    "manifest": "checksums.sha256",
+    "scope": "every committed run file except the checksum manifest itself"
+  },
   "models": {
     "base": {
       "id": "Qwen/Qwen3-8B",

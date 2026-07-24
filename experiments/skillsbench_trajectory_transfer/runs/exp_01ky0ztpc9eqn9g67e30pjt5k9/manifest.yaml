@@ -18,6 +18,8 @@ limitations:
 files:
   config: config.resolved.yaml
   provenance: provenance.json
+  reproduction: reproduction.json
+  checksums: checksums.sha256
   paired_rows: data/normalized_paired_rows.jsonl
   metrics: metrics/final_metrics.json
   artifacts: artifacts/manifest.json

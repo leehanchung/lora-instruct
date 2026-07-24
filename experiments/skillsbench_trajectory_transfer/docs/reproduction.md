@@ -16,8 +16,10 @@ make verify-artifacts RUN=exp_01ky0ztpc9eqn9g67e30pjt5k9
 The analysis command reconstructs paired aggregates and confidence intervals from
 `data/normalized_paired_rows.jsonl`. It compares BFCL arm accuracies, three paired effects,
 six confidence-interval endpoints, and exact IFEval/MMLU/restraint counts to the immutable
-record. The report command writes `report/rebuilt.html`; `report/index.html` is the completed
-reviewed report preserved from the run.
+record. Reproduced analysis and report files are written under ignored `build/<EID>/` paths;
+`runs/<EID>/reproduction.json` and `report/index.html` preserve the completed verification
+and reviewed report without allowing routine commands to overwrite them. `make verify-run`
+checks the SHA-256 manifest covering every committed run file.
 
 `make verify-artifacts` compares every external object in `artifacts/manifest.json` against
 the provider metadata captured in `artifacts/verified_snapshot.json`. It checks existence,
