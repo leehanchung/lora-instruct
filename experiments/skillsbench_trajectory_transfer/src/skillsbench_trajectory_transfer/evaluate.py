@@ -10,7 +10,9 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
-def run_subprocess(command: Sequence[str], *, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+def run_subprocess(
+    command: Sequence[str], *, timeout: float | None = None
+) -> subprocess.CompletedProcess[str]:
     """Run an evaluation command without a shell and raise on failure."""
     if not command:
         raise ValueError("evaluation command must not be empty")
@@ -31,7 +33,9 @@ def request_json(
     request_headers = {"Accept": "application/json", **dict(headers or {})}
     if body is not None:
         request_headers["Content-Type"] = "application/json"
-    request = urllib.request.Request(url, data=body, headers=request_headers, method="POST" if body else "GET")
+    request = urllib.request.Request(
+        url, data=body, headers=request_headers, method="POST" if body else "GET"
+    )
     with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
         return json.loads(response.read().decode("utf-8"))
 
@@ -52,7 +56,9 @@ def endpoint_smoke(
         "max_tokens": 8,
         "temperature": 0,
     }
-    result = request_json(endpoint.rstrip("/") + "/v1/chat/completions", payload, headers=headers, timeout=timeout)
+    result = request_json(
+        endpoint.rstrip("/") + "/v1/chat/completions", payload, headers=headers, timeout=timeout
+    )
     if not isinstance(result, Mapping) or not result.get("choices"):
         raise ValueError("endpoint response has no choices")
     return result

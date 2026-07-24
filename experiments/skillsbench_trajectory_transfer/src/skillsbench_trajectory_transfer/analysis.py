@@ -170,8 +170,9 @@ def _derived_bfcl(
     """Return the recorded BFCL overall/single-turn/multi-turn paired summaries."""
     predicates = {
         "overall": lambda benchmark: benchmark.startswith("bfcl:"),
-        "single_turn": lambda benchmark: benchmark.startswith("bfcl:")
-        and "multi_turn" not in benchmark,
+        "single_turn": lambda benchmark: (
+            benchmark.startswith("bfcl:") and "multi_turn" not in benchmark
+        ),
         "multi_turn": lambda benchmark: benchmark.startswith("bfcl:") and "multi_turn" in benchmark,
     }
     result: dict[str, Any] = {}
